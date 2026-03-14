@@ -49,6 +49,7 @@ def parse_question_page(html: str) -> dict[str, Any]:
         "question_id": None,
         "is_text_input": False,
         "is_code": False,
+        "is_multiple_choice": False,
         "code_question_id": None,
         "test_case_execution_id": None,
         "options": [],
@@ -79,6 +80,28 @@ def parse_question_page(html: str) -> dict[str, Any]:
                         result["test_case_execution_id"] = str(val).strip()
                     break
             return result
+
+    # Multiple choice (3.2): input type="checkbox" name="questions[ID][]", same label structure as radio
+    checkboxes = soup.find_all(
+        name="input",
+        attrs={"type": "checkbox", "name": re.compile(r"^questions\[\d+\]\[\]$")},
+    )
+    if checkboxes:
+        first = checkboxes[0]
+        name = first.get("name")
+        if name:
+            result["question_form_key"] = name
+            result["is_multiple_choice"] = True
+            m = re.search(r"questions\[(\d+)\]", name)
+            if m:
+                result["question_id"] = int(m.group(1))
+        for inp in checkboxes:
+            value = inp.get("value")
+            if value is None:
+                continue
+            label_text = _radio_label_text(inp, soup)
+            result["options"].append((label_text, value))
+        return result
 
     # Radio: 3.1 and 3.2 use same structure — input name="questions[ID]" type="radio", label in next sibling div
     radios = soup.find_all(name="input", attrs={"type": "radio", "name": re.compile(r"^questions\[\d+\]$")})
@@ -137,6 +160,28 @@ def parse_question_page(html: str) -> dict[str, Any]:
         break
 
     return result
+
+
+def is_task_already_answered(html: str) -> bool:
+    """True if the task page shows an already-solved state (no need to wait for form or submit).
+    Avoids long timeouts when the page no longer has an answer form.
+    """
+    if not html or "taskForm" not in html and "questions[" not in html:
+        # Page might be a different view (e.g. result only)
+        if any(m in html for m in ("Решено", "Принято", "Верно", "балл", "Ответ засчитан")):
+            return True
+        return False
+    soup = BeautifulSoup(html, "html.parser")
+    # Submit button "Ответить" is typically removed or hidden when task is already answered
+    form = soup.find("form", id="taskForm")
+    if form:
+        submit_btn = form.find("button", string=re.compile(r"Ответить"))
+        if not submit_btn or submit_btn.get("disabled") is not None:
+            return True
+    # Class that indicates solved state (e.g. no longer "noSolved")
+    if re.search(r"actions_solved|alreadySolved|taskSolved", html, re.I):
+        return True
+    return False
 
 
 def get_csrf_from_page(html: str) -> str | None:

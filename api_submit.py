@@ -51,6 +51,28 @@ def submit_answer_3_2(
     return resp
 
 
+def submit_answer_3_2_multiple(
+    session: requests.Session,
+    lesson_id: int | str,
+    task_id: int | str,
+    form_question_key: str,
+    answer_values: list[str | int],
+    referer_path: str | None = None,
+) -> requests.Response:
+    """POST to /api/lessons/{lesson_id}/tasks/{task_id}/answer_attempts with multiple values for one key (checkboxes).
+    Payload: one form-data part per selected value, all with name=form_question_key (e.g. questions[1207768][]).
+    """
+    url = f"{BASE_URL}/api/lessons/{lesson_id}/tasks/{task_id}/answer_attempts"
+    referer_path = referer_path or f"/lessons/{lesson_id}/tasks/{task_id}"
+    referer = f"{BASE_URL}{referer_path}"
+    session.headers["Referer"] = referer
+    session.headers["X-Referer"] = referer
+
+    payload = [(form_question_key, (None, str(v))) for v in answer_values]
+    resp = session.post(url, files=payload)
+    return resp
+
+
 def submit_answer_3_2_code(
     session: requests.Session,
     lesson_id: int | str,

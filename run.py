@@ -17,6 +17,13 @@ from run_32 import run_3_2
 VIDEO_SEEK_FRACTION = 0.95
 PLAYER_TIMELINE_SELECTOR = "input[data-testid='player-timeline-slider']"
 
+# Flaws in the seek approach (when re-enabling):
+# - Tries every tab with 8s wait each; first tab is often the login page (no player) -> wasted time.
+# - Player may be inside an iframe; we never switch to it, so the slider is never found.
+# - Setting input.value + dispatchEvent may not trigger the site's actual seek logic (custom players
+#   often keep state in JS and only sync the range input for display).
+# - No wait for video page/player to finish loading before looking for the slider (only 0.5s per tab).
+
 
 def _read_video_links(path: str) -> list[str]:
     """Read video URLs: one per line, skip empty and # comments."""
@@ -86,8 +93,9 @@ def main() -> None:
                 if url:
                     driver.execute_script("window.open(arguments[0], '_blank');", url)
             time.sleep(3)
-            print(f"[video] Seeking to {int(VIDEO_SEEK_FRACTION * 100)}% in video tabs...")
-            _seek_all_video_tabs_to_95(driver)
+            # Video seek disabled: slow (8s timeout per tab), often doesn't find element or actually seek.
+            # print(f"[video] Seeking to {int(VIDEO_SEEK_FRACTION * 100)}% in video tabs...")
+            # _seek_all_video_tabs_to_95(driver)
         run_3_1(driver)
         run_3_2(driver)
         print("Done.")

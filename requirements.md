@@ -127,6 +127,53 @@ Content-Disposition: form-data; name=^\^"questions^[1207755^]^\^"^
 ^"
 ```
 
+### ANSWER ATTEMPT payload and html for a MULTIPLE CHOICE TYPE OF URL FORMAT 3.2
+```
+curl ^"https://kb.cifrium.ru/api/lessons/11861/tasks/1167881/answer_attempts^" ^
+  -H ^"Accept: application/json, text/plain, */*^" ^
+  -H ^"Accept-Language: en-US,en;q=0.9^" ^
+  -H ^"Connection: keep-alive^" ^
+  -H ^"Content-Type: multipart/form-data; boundary=----WebKitFormBoundaryiLi4qAtMmcVqBTDw^" ^
+  -b ^"user_agent_uid=9f2d5b14-2b92-4cbc-a112-d6734e3970d8; _csrf_token=4RUCYgVd8GDN585i3EkO^%^2BTOzYQ1SSgQ4DGWYwukNrvLRtYvPkHCX^%^2FXc1r8cIhN^%^2BrrqFAl63tu^%^2Bn1X872qtoSXA^%^3D^%^3D; _ym_uid=1773509181757335860; _ym_d=1773509181; mindboxDeviceUUID=6ed4752e-fac0-49ae-9141-332f79572ca3; directCrm-session=^%^7B^%^22deviceGuid^%^22^%^3A^%^226ed4752e-fac0-49ae-9141-332f79572ca3^%^22^%^7D; _ym_isad=2; client_timezone=Europe/Moscow; remember_user_token=eyJfcmFpbHMiOnsibWVzc2FnZSI6IlcxczNOakF4TVRsZExDSWtNbUVrTVRBa05WbEtVRUpqUWt0MlQzQTJXamc0VlZWamNtdGpMaUlzSWpFM056TTFNRGt4T1RVdU9UVTFPRGM1TWlKZCIsImV4cCI6IjIwMjYtMDYtMTRUMTc6MjY6MzVaIiwicHVyIjpudWxsfX0^%^3D--ca38e305c186cd957b4150a06648d58f93c2bf8e; _wk_kbc_session=29bf37ff28a9f7a55b2470818f67c11d; _mkra_stck=pg^%^3A1773509236.7480643^" ^
+  -H ^"Origin: https://kb.cifrium.ru^" ^
+  -H ^"Referer: https://kb.cifrium.ru/lessons/11861/tasks/1167881^" ^
+  -H ^"Sec-Fetch-Dest: empty^" ^
+  -H ^"Sec-Fetch-Mode: cors^" ^
+  -H ^"Sec-Fetch-Site: same-origin^" ^
+  -H ^"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36^" ^
+  -H ^"X-CSRF-Token: 4RUCYgVd8GDN585i3EkO+TOzYQ1SSgQ4DGWYwukNrvLRtYvPkHCX/Xc1r8cIhN+rrqFAl63tu+n1X872qtoSXA==^" ^
+  -H ^"X-Device-Id: 32c8ed65e482cef9f4f92ca88e4a188c^" ^
+  -H ^"X-Referer: https://kb.cifrium.ru/lessons/11861/tasks/1167881^" ^
+  -H ^"X-Requested-With: XMLHttpRequest^" ^
+  -H ^"X-Skip-Error-Notification: true^" ^
+  -H ^"sec-ch-ua: ^\^"Not:A-Brand^\^";v=^\^"99^\^", ^\^"Google Chrome^\^";v=^\^"145^\^", ^\^"Chromium^\^";v=^\^"145^\^"^" ^
+  -H ^"sec-ch-ua-mobile: ?0^" ^
+  -H ^"sec-ch-ua-platform: ^\^"Windows^\^"^" ^
+  --data-raw ^"------WebKitFormBoundaryiLi4qAtMmcVqBTDw^
+
+Content-Disposition: form-data; name=^\^"questions^[1207768^]^[^]^\^"^
+
+^
+
+10162093^
+
+------WebKitFormBoundaryiLi4qAtMmcVqBTDw^
+
+Content-Disposition: form-data; name=^\^"questions^[1207768^]^[^]^\^"^
+
+^
+
+10162094^
+
+------WebKitFormBoundaryiLi4qAtMmcVqBTDw--^
+
+^"
+```
+```
+<form id="taskForm" action="/lessons/11861/tasks/1167881" method="post" class="wkUtils_userUnselectable__tdz2n notranslate" translate="no"><div class="styled__Wrapper-klnFHs"><div class="fox-ui__sc-1r4rhyb-0 cklDCA"><div><div><div><div class="styled__Root-eQsOOc lmJYyU"><div class="styled__Root-egLEii iMJyKO"></div><input class="input" name="questions[1207768][]" type="checkbox" tabindex="-1" value="10162091"><div class="fox-ui__sc-s2fogy-0 iwHwmg fox-Text MathContent_root__eYcNu styled__Label-iUCEmK jNuXTI"><span class="MathContent_content__2a8XE" dir="auto">print</span></div></div><div class="styled__Root-eQsOOc lmJYyU"><div class="styled__Root-egLEii iMJyKO"></div><input class="input" name="questions[1207768][]" type="checkbox" tabindex="-1" value="10162092"><div class="fox-ui__sc-s2fogy-0 iwHwmg fox-Text MathContent_root__eYcNu styled__Label-iUCEmK jNuXTI"><span class="MathContent_content__2a8XE" dir="auto">str</span></div></div><div class="styled__Root-eQsOOc eAaNeD"><div class="styled__Root-egLEii bgANFm"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 26 26" class="checkmark"><path d="M20.086 6.086L9.5 16.672l-3.586-3.586-2.828 2.828L9.5 22.328 22.914 8.914z"></path></svg></div><input class="input" name="questions[1207768][]" type="checkbox" tabindex="-1" value="10162093"><div class="fox-ui__sc-s2fogy-0 iwHwmg fox-Text MathContent_root__eYcNu styled__Label-iUCEmK jNuXTI"><span class="MathContent_content__2a8XE" dir="auto">def</span></div></div><div class="styled__Root-eQsOOc eAaNeD"><div class="styled__Root-egLEii bgANFm"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 26 26" class="checkmark"><path d="M20.086 6.086L9.5 16.672l-3.586-3.586-2.828 2.828L9.5 22.328 22.914 8.914z"></path></svg></div><input class="input" name="questions[1207768][]" type="checkbox" tabindex="-1" value="10162094"><div class="fox-ui__sc-s2fogy-0 iwHwmg fox-Text MathContent_root__eYcNu styled__Label-iUCEmK jNuXTI"><span class="MathContent_content__2a8XE" dir="auto">for</span></div></div></div></div></div></div><div class="wkUtils_avoidPageBreakInside__55agg"></div></div></form>
+```
+
+
 
 ### ANSWER ATTEMPT FOR TEXT INPUT TYPE of url format 3.2
 ```

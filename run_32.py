@@ -6,21 +6,19 @@ from pathlib import Path
 
 from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-from api_submit import submit_answer_3_2, submit_answer_3_2_code
+from api_submit import submit_answer_3_2, submit_answer_3_2_code, submit_answer_3_2_multiple
 from browser import make_session, refresh_session_from_driver
 from config import BASE_URL, EXCEL_3_2, ANSWER_SIMILARITY_THRESHOLD
 from excel_loader import load_3_2
-from page_parser import get_csrf_from_page, parse_question_page
-from similarity import best_match
+from page_parser import get_csrf_from_page, is_task_already_answered, parse_question_page
+from similarity import best_match, best_matches_multiple
 
 FORM_SELECTOR = "input[name^='questions[']"
 # Code task pages use form#taskForm and CodeMirror, no standard input initially
 FORM_OR_TASKFORM = "form#taskForm"
-FORM_WAIT_MAIN = 2
-FORM_WAIT_IFRAME = 2
+FORM_WAIT_MAIN = 1.8
 
 _JS_GET_CODE_IDS = """
 var inputs = document.querySelectorAll('input[name*="questions["]');
@@ -85,12 +83,20 @@ def _get_code_ids_from_api(session, lesson_id, task_id) -> dict | None:
         return None
 
 
-def _get_page_html(driver: WebDriver, page_url: str) -> str | None:
-    """Load page in driver, wait for form (or form#taskForm for code tasks), return HTML."""
+def _get_page_html(driver: WebDriver, page_url: str) -> tuple[str | None, bool]:
+    """Load page, wait for form or detect already-answered. Returns (html, already_answered)."""
     try:
         driver.set_page_load_timeout(20)
         driver.get(page_url)
-        def form_or_taskform_present(d):
+        # Quick check: already answered -> skip
+        try:
+            html = driver.page_source
+            if is_task_already_answered(html):
+                return (None, True)
+        except Exception:
+            pass
+
+        def form_or_solved(d):
             try:
                 d.find_element(By.CSS_SELECTOR, FORM_SELECTOR)
                 return True
@@ -100,31 +106,33 @@ def _get_page_html(driver: WebDriver, page_url: str) -> str | None:
                 d.find_element(By.CSS_SELECTOR, FORM_OR_TASKFORM)
                 return True
             except Exception:
-                return False
+                pass
+            try:
+                if is_task_already_answered(d.page_source):
+                    return True
+            except Exception:
+                pass
+            return False
 
         try:
-            WebDriverWait(driver, FORM_WAIT_MAIN).until(form_or_taskform_present)
+            WebDriverWait(driver, FORM_WAIT_MAIN).until(form_or_solved)
         except Exception:
-                for ifr in driver.find_elements(By.TAG_NAME, "iframe"):
-                    try:
-                        driver.switch_to.frame(ifr)
-                        WebDriverWait(driver, FORM_WAIT_IFRAME).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, FORM_SELECTOR))
-                        )
-                        html = driver.execute_script("return document.documentElement.outerHTML")
-                        driver.switch_to.default_content()
-                        return html
-                    except Exception:
-                        driver.switch_to.default_content()
-                        continue
-                return None
+            pass
         page_html = driver.page_source
+        # If we timed out but HTML has form, use it anyway and try to submit
+        if not page_html:
+            return (None, False)
+        try:
+            if is_task_already_answered(page_html):
+                return (None, True)
+        except Exception:
+            pass
         if "taskForm" in page_html and "cm-editor" in page_html:
-            time.sleep(1.2)
+            time.sleep(0.7)
             page_html = driver.page_source
-        return page_html
+        return (page_html, False)
     except Exception:
-        return None
+        return (None, False)
     finally:
         try:
             driver.switch_to.default_content()
@@ -156,7 +164,10 @@ def run_3_2(driver: WebDriver) -> None:
             resp = None
             print(f"[3.2] Task {task_id} ...", flush=True)
             page_url = f"{BASE_URL}/lessons/{lesson_id}/tasks/{task_id}"
-            page_html = _get_page_html(driver, page_url)
+            page_html, already_answered = _get_page_html(driver, page_url)
+            if already_answered:
+                print(f"[3.2] Task {task_id} already answered, skip.")
+                continue
             if not page_html or ("questions[" not in page_html and "taskForm" not in page_html):
                 print(f"[3.2] Could not load form for task {task_id}")
                 continue
@@ -167,14 +178,16 @@ def run_3_2(driver: WebDriver) -> None:
             parsed = parse_question_page(page_html)
             form_key = parsed.get("question_form_key")
             if not form_key and "taskForm" in page_html and "cm-editor" in page_html:
-                code_ids = None
-                for _ in range(3):
-                    time.sleep(0.8)
-                    code_ids = _get_code_ids_from_browser(driver)
-                    if code_ids and code_ids.get("code_question_id"):
-                        break
+                code_ids = _get_code_ids_from_api(session, lesson_id, task_id)
                 if not code_ids or not code_ids.get("code_question_id"):
-                    code_ids = _get_code_ids_from_api(session, lesson_id, task_id)
+                    code_ids = None
+                    for _ in range(2):
+                        time.sleep(0.3)
+                        code_ids = _get_code_ids_from_browser(driver)
+                        if code_ids and code_ids.get("code_question_id"):
+                            break
+                    if not code_ids or not code_ids.get("code_question_id"):
+                        code_ids = _get_code_ids_from_api(session, lesson_id, task_id)
                 if code_ids:
                     parsed["is_code"] = True
                     parsed["question_form_key"] = f"questions[{code_ids['code_question_id']}][]"
@@ -207,6 +220,22 @@ def run_3_2(driver: WebDriver) -> None:
                 answer_value = str(answer).strip() if answer is not None else ""
                 try:
                     resp = submit_answer_3_2(session, lesson_id, task_id, form_key, answer_value)
+                except Exception:
+                    print(f"[3.2] Submit task {task_id} failed:")
+                    traceback.print_exc()
+                    continue
+            elif parsed.get("is_multiple_choice"):
+                options = parsed.get("options") or []
+                answer_values = best_matches_multiple(
+                    answer, options, threshold=ANSWER_SIMILARITY_THRESHOLD
+                )
+                if not answer_values:
+                    print(f"[3.2] No matching option(s) for answer '{answer}' (task {task_id}), skip.")
+                    continue
+                try:
+                    resp = submit_answer_3_2_multiple(
+                        session, lesson_id, task_id, form_key, answer_values
+                    )
                 except Exception:
                     print(f"[3.2] Submit task {task_id} failed:")
                     traceback.print_exc()

@@ -11,7 +11,7 @@ from api_submit import submit_answer_3_1
 from browser import make_session, refresh_session_from_driver
 from config import BASE_URL, EXCEL_3_1, ANSWER_SIMILARITY_THRESHOLD
 from excel_loader import load_3_1
-from page_parser import get_csrf_from_page, parse_question_page
+from page_parser import get_csrf_from_page, is_task_already_answered, parse_question_page
 from similarity import best_match
 
 
@@ -38,25 +38,43 @@ def run_3_1(driver: WebDriver) -> None:
             print(f"[3.1] Question {question_id} ...", flush=True)
             question_url = f"{BASE_URL}/classworks/{classwork_id}/tasks/{question_id}?page=1"
             try:
-                driver.set_page_load_timeout(20)
+                driver.set_page_load_timeout(6)
                 driver.get(question_url)
+                # If task is already answered, skip without waiting for form
+                try:
+                    html = driver.page_source
+                    if is_task_already_answered(html):
+                        print(f"[3.1] Question {question_id} already answered, skip.")
+                        continue
+                except Exception:
+                    pass
                 print(f"[3.1] Page loaded, waiting for form...", flush=True)
                 form_selector = "input[name^='questions[']"
+
+                def _form_or_solved(d):
+                    try:
+                        d.find_element(By.CSS_SELECTOR, form_selector)
+                        return True
+                    except Exception:
+                        pass
+                    try:
+                        if is_task_already_answered(d.page_source):
+                            return True
+                    except Exception:
+                        pass
+                    return False
+
+                page_html = None
                 try:
-                    WebDriverWait(driver, 2).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, form_selector))
-                    )
+                    WebDriverWait(driver, 4.3).until(_form_or_solved)
                     page_html = driver.page_source
                 except Exception:
                     # Form may be inside an iframe
                     iframes = driver.find_elements(By.TAG_NAME, "iframe")
-                    page_html = None
-                    for idx, ifr in enumerate(iframes):
+                    for ifr in iframes:
                         try:
                             driver.switch_to.frame(ifr)
-                            WebDriverWait(driver, 2).until(
-                                EC.presence_of_element_located((By.CSS_SELECTOR, form_selector))
-                            )
+                            WebDriverWait(driver, 4.0).until(_form_or_solved)
                             page_html = driver.execute_script("return document.documentElement.outerHTML")
                             driver.switch_to.default_content()
                             break
@@ -64,7 +82,13 @@ def run_3_1(driver: WebDriver) -> None:
                             driver.switch_to.default_content()
                             continue
                     if not page_html:
-                        raise TimeoutError("Form not found in page or in any iframe")
+                        page_html = driver.page_source
+                if not page_html:
+                    print(f"[3.1] Could not load page for question {question_id}")
+                    continue
+                if is_task_already_answered(page_html or ""):
+                    print(f"[3.1] Question {question_id} already answered, skip.")
+                    continue
             except Exception:
                 print(f"[3.1] GET question {question_id} failed:")
                 traceback.print_exc()
@@ -75,8 +99,8 @@ def run_3_1(driver: WebDriver) -> None:
                     driver.set_page_load_timeout(300)
                 except Exception:
                     pass
-            if "questions[" not in page_html:
-                print(f"[3.1] Page has no form (questions[...]), question {question_id}")
+            if "questions[" not in page_html and "taskForm" not in page_html:
+                print(f"[3.1] Page has no form, question {question_id}")
                 continue
             refresh_session_from_driver(driver, session)
             page_csrf = get_csrf_from_page(page_html)
