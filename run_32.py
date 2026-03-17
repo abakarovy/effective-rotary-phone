@@ -8,12 +8,19 @@ from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 
-from api_submit import submit_answer_3_2, submit_answer_3_2_code, submit_answer_3_2_multiple
+from api_submit import (
+    submit_answer_3_2,
+    submit_answer_3_2_code,
+    submit_answer_3_2_multiple,
+    submit_answer_3_2_drag,
+    submit_code_test_execution,
+)
 from browser import make_session, refresh_session_from_driver
 from config import BASE_URL, EXCEL_3_2, ANSWER_SIMILARITY_THRESHOLD
 from excel_loader import load_3_2
 from page_parser import get_csrf_from_page, is_task_already_answered, parse_question_page
 from similarity import best_match, best_matches_multiple
+import re
 
 FORM_SELECTOR = "input[name^='questions[']"
 # Code task pages use form#taskForm and CodeMirror, no standard input initially
@@ -34,6 +41,89 @@ for (var i = 0; i < inputs.length; i++) {
 }
 return result;
 """
+
+
+def _normalize_answer(answer) -> str:
+    """
+    Нормализует ответ из Excel.
+
+    Для drag-and-drop типа (3.2) ответы записаны в формате:
+      [item] -> [item]
+    по одному соответствию на строку.
+    Нам оттуда важна правая часть (то, что реально «выбрано»),
+    поэтому превращаем такой текст в список правых элементов,
+    разделённых переводами строк.
+    Для остальных случаев возвращаем строку как есть.
+    """
+    if answer is None:
+        return ""
+    text = str(answer)
+    if "->" not in text:
+        return text
+    lines = []
+    for raw_line in str(text).splitlines():
+        if "->" not in raw_line:
+            continue
+        left, right = raw_line.split("->", 1)
+        right = right.strip()
+        # убираем возможные квадратные скобки вокруг элемента
+        if right.startswith("[") and right.endswith("]"):
+            right = right[1:-1].strip()
+        if right:
+            lines.append(right)
+    # если в итоге ничего не разобрали — вернём исходный текст,
+    # чтобы не ломать поведение в неожиданных форматах
+    return "\n".join(lines) if lines else text
+
+
+def _parse_drag_payload(answer_text: str) -> tuple[int | None, list[tuple[int, int]]]:
+    """
+    Разбирает текст из Excel, если он содержит payload в стиле curl для drag-and-drop.
+
+    Ищет блоки вида:
+      Content-Disposition: form-data; name="questions[1207774][10162110]"
+
+    <пустые строки>
+    10162111
+
+    Возвращает (question_id, [(from_id, to_id), ...]).
+    Если ничего похожего не найдено — (None, []).
+    """
+    if not answer_text:
+        return None, []
+    lines = answer_text.splitlines()
+    pattern = re.compile(r'name="questions\[(\d+)\]\[(\d+)\]"')
+    question_id: int | None = None
+    mappings: list[tuple[int, int]] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        m = pattern.search(line)
+        if not m:
+            i += 1
+            continue
+        qid = int(m.group(1))
+        from_id = int(m.group(2))
+        if question_id is None:
+            question_id = qid
+        # Пропускаем до первой непустой строки с числом — это to_id
+        j = i + 1
+        to_id: int | None = None
+        while j < n:
+            val_line = lines[j].strip()
+            j += 1
+            if not val_line:
+                continue
+            if val_line.isdigit():
+                to_id = int(val_line)
+            break
+        if to_id is not None:
+            mappings.append((from_id, to_id))
+        i = j
+    if question_id is None or not mappings:
+        return None, []
+    return question_id, mappings
 
 
 def _get_code_ids_from_browser(driver: WebDriver) -> dict | None:
@@ -161,6 +251,38 @@ def run_3_2(driver: WebDriver) -> None:
             traceback.print_exc()
             continue
         for task_id, answer in rows:
+            # Приводим ответ из Excel к удобному текстовому виду
+            # (в том числе вытаскиваем правые части пар для drag-and-drop).
+            normalized_answer = _normalize_answer(answer)
+
+            # Особый случай: в ячейке лежит payload для drag-and-drop (скопирован из curl).
+            drag_question_id, drag_mappings = _parse_drag_payload(str(answer))
+            if drag_question_id is not None and drag_mappings:
+                print(
+                    f"[3.2] Task {task_id}: using explicit drag-and-drop payload from Excel "
+                    f"(question_id={drag_question_id}, {len(drag_mappings)} mapping(s))"
+                )
+                try:
+                    resp = submit_answer_3_2_drag(
+                        session,
+                        lesson_id,
+                        task_id,
+                        drag_question_id,
+                        drag_mappings,
+                    )
+                except Exception:
+                    print(f"[3.2] Submit drag-and-drop task {task_id} failed:")
+                    traceback.print_exc()
+                    continue
+                if resp.status_code in (200, 201, 204):
+                    preview = (resp.text or "")[:200].replace("\n", " ")
+                    print(f"[3.2] Submit lesson={lesson_id} task={task_id} -> {resp.status_code} {preview}")
+                else:
+                    body = (resp.text or (resp.content.decode(errors="replace") if resp.content else ""))[:500]
+                    print(f"[3.2] Submit lesson={lesson_id} task={task_id} -> err {resp.status_code}: {body}")
+                # payload уже отправлен — дальше обычная логика не нужна
+                continue
+
             resp = None
             print(f"[3.2] Task {task_id} ...", flush=True)
             page_url = f"{BASE_URL}/lessons/{lesson_id}/tasks/{task_id}"
@@ -195,6 +317,10 @@ def run_3_2(driver: WebDriver) -> None:
                     parsed["test_case_execution_id"] = code_ids.get("test_case_execution_id")
                     form_key = parsed["question_form_key"]
             if not form_key:
+                # Drag-and-drop задачи (LinkTask) не имеют стандартного form_key в HTML.
+                if parsed.get("is_drag"):
+                    print(f"[3.2] Task {task_id}: detected drag-and-drop type without form key (requires explicit payload).")
+                    continue
                 print(f"[3.2] Could not find form question key for task {task_id}")
                 continue
             if parsed.get("is_code"):
@@ -202,13 +328,41 @@ def run_3_2(driver: WebDriver) -> None:
                 if not code_id:
                     print(f"[3.2] Code task {task_id}: missing code_question_id")
                     continue
-                source_code = (answer if isinstance(answer, str) else str(answer or "")).strip()
+                source_code = (normalized_answer if isinstance(normalized_answer, str) else str(normalized_answer or "")).strip()
                 if not source_code:
                     print(f"[3.2] Code task {task_id}: empty code in Excel, skip.")
                     continue
+                # Сначала запускаем тесты через /api/wk/test_case_executions
+                try:
+                    ids_for_tests = _get_code_ids_from_api(session, lesson_id, task_id)
+                    test_question_id = ids_for_tests.get("code_question_id") if ids_for_tests else None
+                except Exception:
+                    test_question_id = None
+                if test_question_id:
+                    try:
+                        resp_test = submit_code_test_execution(
+                            session,
+                            test_question_id,
+                            language="python3",
+                            source_code=source_code,
+                            lesson_id=lesson_id,
+                            task_id=task_id,
+                        )
+                        print(
+                            f"[3.2] Code task {task_id}: test execution -> "
+                            f"{resp_test.status_code} {(resp_test.text or '')[:120].replace(chr(10), ' ')}"
+                        )
+                    except Exception:
+                        print(f"[3.2] Code task {task_id}: test execution request failed:")
+                        traceback.print_exc()
+                # Даём бэкенду секунду, чтобы зафиксировать запуск тестов
+                time.sleep(1.0)
                 try:
                     resp = submit_answer_3_2_code(
-                        session, lesson_id, task_id, code_id,
+                        session,
+                        lesson_id,
+                        task_id,
+                        code_id,
                         language="python3",
                         source_code=source_code,
                     )
@@ -217,7 +371,7 @@ def run_3_2(driver: WebDriver) -> None:
                     traceback.print_exc()
                     continue
             elif parsed.get("is_text_input"):
-                answer_value = str(answer).strip() if answer is not None else ""
+                answer_value = str(normalized_answer).strip() if normalized_answer is not None else ""
                 try:
                     resp = submit_answer_3_2(session, lesson_id, task_id, form_key, answer_value)
                 except Exception:
@@ -227,7 +381,7 @@ def run_3_2(driver: WebDriver) -> None:
             elif parsed.get("is_multiple_choice"):
                 options = parsed.get("options") or []
                 answer_values = best_matches_multiple(
-                    answer, options, threshold=ANSWER_SIMILARITY_THRESHOLD
+                    normalized_answer, options, threshold=ANSWER_SIMILARITY_THRESHOLD
                 )
                 if not answer_values:
                     print(f"[3.2] No matching option(s) for answer '{answer}' (task {task_id}), skip.")
@@ -242,7 +396,7 @@ def run_3_2(driver: WebDriver) -> None:
                     continue
             else:
                 options = parsed.get("options") or []
-                answer_value = best_match(answer, options, threshold=ANSWER_SIMILARITY_THRESHOLD)
+                answer_value = best_match(normalized_answer, options, threshold=ANSWER_SIMILARITY_THRESHOLD)
                 if answer_value is None:
                     print(f"[3.2] No matching option for answer '{answer}' (task {task_id}), skip.")
                     continue

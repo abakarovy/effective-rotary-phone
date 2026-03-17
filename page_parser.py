@@ -50,6 +50,7 @@ def parse_question_page(html: str) -> dict[str, Any]:
         "is_text_input": False,
         "is_code": False,
         "is_multiple_choice": False,
+        "is_drag": False,
         "code_question_id": None,
         "test_case_execution_id": None,
         "options": [],
@@ -119,6 +120,14 @@ def parse_question_page(html: str) -> dict[str, Any]:
                 continue
             label_text = _radio_label_text(inp, soup)
             result["options"].append((label_text, value))
+        return result
+
+    # Drag-and-drop (LinkTask) detection: нет обычных input[name="questions[...]"],
+    # но есть специфичные классы LinkTask_root/LinkTask_optionsPanel.
+    if "LinkTask_root__" in html or "LinkTask_optionsPanel__" in html:
+        result["is_drag"] = True
+        # Для drag-типа числовые id ответов есть только в payload curl, а не в HTML,
+        # поэтому form_key определить нельзя.
         return result
 
     # Text/textarea: name like questions[1248194][]
