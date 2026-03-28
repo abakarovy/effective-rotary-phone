@@ -3,10 +3,12 @@ import os
 import sys
 from pathlib import Path
 
-# When running as .exe, data files are bundled and extracted to _MEIPASS
+# Data files location:
+# - in script mode: project folder (next to .py files)
+# - in .exe mode: folder where .exe is located (so user can replace xlsx/txt without rebuild)
 def _base_dir() -> Path:
     if getattr(sys, "frozen", False):
-        return Path(sys._MEIPASS)  # bundled data extracted here
+        return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
 
 _BASE = _base_dir()
@@ -16,6 +18,7 @@ BASE_URL = os.environ.get("KBC_BASE_URL", "https://kb.cifrium.ru")
 # Paths to Excel files (3.1 = classworks/homeworks, 3.2 = lessons)
 EXCEL_3_1 = os.environ.get("KBC_EXCEL_31", str(_BASE / "test1.xlsx"))
 EXCEL_3_2 = os.environ.get("KBC_EXCEL_32", str(_BASE / "test2.xlsx"))
+EXCEL_3_3 = os.environ.get("KBC_EXCEL_33", str(_BASE / "test3.xlsx"))
 
 # Optional: course_id for building teacher task page URL for 3.1 (if needed)
 COURSE_ID = os.environ.get("KBC_COURSE_ID", "")

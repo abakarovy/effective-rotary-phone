@@ -48,3 +48,8 @@ def load_3_1(path: str | Path) -> dict[Any, list[tuple[Any, Any]]]:
 def load_3_2(path: str | Path) -> dict[Any, list[tuple[Any, Any]]]:
     """Load test2.xlsx for format 3.2. Groups by lesson_id (taskId). Each row: (task_id, answer)."""
     return group_by_first(load_excel(path))
+
+
+def load_3_3(path: str | Path) -> dict[Any, list[tuple[Any, Any]]]:
+    """Load test3.xlsx for format trainings. Groups by training_id. Each row: (task_id, answer)."""
+    return group_by_first(load_excel(path))

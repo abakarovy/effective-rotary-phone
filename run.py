@@ -12,6 +12,7 @@ from browser import create_driver, wait_for_login
 from config import VIDEO_LINKS_FILE
 from run_31 import run_3_1
 from run_32 import run_3_2
+from run_33 import run_3_3
 
 # Video timeline: seek to this fraction (0.95 = 95% to the end)
 VIDEO_SEEK_FRACTION = 0.95
@@ -98,6 +99,7 @@ def main() -> None:
             # _seek_all_video_tabs_to_95(driver)
         run_3_1(driver)
         run_3_2(driver)
+        run_3_3(driver)
         print("Done.")
     except Exception:
         traceback.print_exc()
