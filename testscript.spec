@@ -5,7 +5,7 @@ a = Analysis(
     ['run.py'],
     pathex=[],
     binaries=[],
-    datas=[('test1.xlsx', '.'), ('test2.xlsx', '.'), ('videos.txt', '.')],
+    datas=[('test1.xlsx', '.'), ('test2.xlsx', '.'), ('test3.xlsx', '.'), ('videos.txt', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
