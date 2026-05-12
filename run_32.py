@@ -1,12 +1,12 @@
 """Run format 3.2: lessons. Submit each answer via API (no video). Load question page in browser to get form HTML."""
 import json
+import re
 import time
 import traceback
 from pathlib import Path
 
 from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
 
 from api_submit import (
     submit_answer_3_2,
@@ -19,29 +19,9 @@ from browser import make_session, refresh_session_from_driver
 from config import BASE_URL, EXCEL_3_2, ANSWER_SIMILARITY_THRESHOLD
 from excel_loader import load_3_2
 from page_parser import get_csrf_from_page, is_task_already_answered, parse_question_page
-from similarity import best_match, best_matches_multiple
-import re
+from similarity import best_match, best_matches_multiple, similarity
 
 FORM_SELECTOR = "input[name^='questions[']"
-# Code task pages use form#taskForm and CodeMirror, no standard input initially
-FORM_OR_TASKFORM = "form#taskForm"
-FORM_WAIT_MAIN = 1.8
-
-_JS_GET_CODE_IDS = """
-var inputs = document.querySelectorAll('input[name*="questions["]');
-var result = { code_question_id: null, test_case_execution_id: null };
-for (var i = 0; i < inputs.length; i++) {
-  var n = inputs[i].name || '';
-  var v = inputs[i].value || '';
-  if (n.indexOf('][][') !== -1) {
-    var match = n.match(/questions\\[(\\d+)\\]/);
-    if (match) result.code_question_id = parseInt(match[1], 10);
-    if (n.indexOf('test_case_execution_id') !== -1) result.test_case_execution_id = v;
-  }
-}
-return result;
-"""
-
 
 def _normalize_answer(answer) -> str:
     """
@@ -126,17 +106,75 @@ def _parse_drag_payload(answer_text: str) -> tuple[int | None, list[tuple[int, i
     return question_id, mappings
 
 
-def _get_code_ids_from_browser(driver: WebDriver) -> dict | None:
-    """Run in page context: find code task hidden inputs, return code_question_id and test_case_execution_id."""
-    try:
-        r = driver.execute_script(_JS_GET_CODE_IDS)
-        if r and r.get("code_question_id") and r.get("test_case_execution_id"):
-            return r
-        if r and r.get("code_question_id"):
-            return r
-        return None
-    except Exception:
-        return None
+def _parse_drag_pairs_from_excel(answer_text: str) -> list[tuple[str, str]]:
+    """Parse '[left] -> [right]' pairs from Excel cell."""
+    if not answer_text:
+        return []
+    pairs = []
+    for raw in str(answer_text).splitlines():
+        if "->" not in raw:
+            continue
+        left, right = raw.split("->", 1)
+        left = left.strip()
+        right = right.strip()
+        if left.startswith("[") and left.endswith("]"):
+            left = left[1:-1].strip()
+        if right.startswith("[") and right.endswith("]"):
+            right = right[1:-1].strip()
+        if left and right:
+            pairs.append((left, right))
+    return pairs
+
+
+def _best_id_by_text(text: str, options: list[tuple[str, int]], threshold: float = 0.7) -> int | None:
+    best_ratio = 0.0
+    best_id = None
+    for opt_text, opt_id in options:
+        r = similarity(text or "", opt_text or "")
+        if r >= threshold and r > best_ratio:
+            best_ratio = r
+            best_id = opt_id
+    return best_id
+
+
+def _build_drag_payload_from_api(task_json: dict, answer_text: str) -> tuple[int | None, list[tuple[int, int]]]:
+    """
+    Build drag payload from lesson task API:
+      questions[question_id][answers.id] = available_answers.id
+    using Excel pairs '[left] -> [right]'.
+    """
+    if not isinstance(task_json, dict):
+        return None, []
+    questions = task_json.get("questions") or []
+    q_links = None
+    for q in questions:
+        if isinstance(q, dict) and q.get("type") == "links":
+            q_links = q
+            break
+    if not q_links:
+        return None, []
+    qid = q_links.get("id")
+    if qid is None:
+        return None, []
+    left_opts = []
+    for a in (q_links.get("answers") or []):
+        if isinstance(a, dict) and a.get("id") is not None:
+            left_opts.append((str(a.get("content") or "").strip(), int(a["id"])))
+    right_opts = []
+    for a in (q_links.get("available_answers") or []):
+        if isinstance(a, dict) and a.get("id") is not None:
+            right_opts.append((str(a.get("content") or "").strip(), int(a["id"])))
+    pairs = _parse_drag_pairs_from_excel(answer_text)
+    mappings: list[tuple[int, int]] = []
+    used_left = set()
+    for left_txt, right_txt in pairs:
+        left_id = _best_id_by_text(left_txt, left_opts, threshold=ANSWER_SIMILARITY_THRESHOLD)
+        right_id = _best_id_by_text(right_txt, right_opts, threshold=ANSWER_SIMILARITY_THRESHOLD)
+        if left_id is None or right_id is None or left_id in used_left:
+            continue
+        used_left.add(left_id)
+        mappings.append((left_id, right_id))
+    return int(qid), mappings
 
 
 def _get_code_ids_from_api(session, lesson_id, task_id) -> dict | None:
@@ -151,17 +189,23 @@ def _get_code_ids_from_api(session, lesson_id, task_id) -> dict | None:
         tceid = None
         if isinstance(data, dict):
             task = data.get("task") or data
-            qid = data.get("question_id") or data.get("id") or task.get("question_id") or task.get("id")
+            # IMPORTANT: for code tasks, question id is usually in questions[].id
+            # (root data.id is task_id and must NOT be used as question id).
+            qid = data.get("question_id") or task.get("question_id")
             tceid = data.get("test_case_execution_id") or task.get("test_case_execution_id")
             if not tceid and isinstance(data.get("test_case_executions"), list) and data["test_case_executions"]:
                 tceid = data["test_case_executions"][0].get("id") if isinstance(data["test_case_executions"][0], dict) else data["test_case_executions"][0]
-            if (qid is None or tceid is None) and isinstance(task.get("questions"), list):
+            if isinstance(task.get("questions"), list):
                 for q in task["questions"]:
-                    if isinstance(q, dict) and (q.get("test_case_execution_id") or q.get("id")):
+                    if not isinstance(q, dict):
+                        continue
+                    # Prefer programming question entry
+                    if q.get("type") == "wk_programming" or qid is None:
                         if qid is None:
                             qid = q.get("question_id") or q.get("id") or qid
                         if tceid is None:
-                            tceid = q.get("test_case_execution_id") or q.get("id")
+                            tceid = q.get("test_case_execution_id")
+                    if qid is not None and tceid is not None:
                         break
         if qid is not None:
             return {
@@ -173,53 +217,27 @@ def _get_code_ids_from_api(session, lesson_id, task_id) -> dict | None:
         return None
 
 
+def _get_lesson_task_json(session, lesson_id, task_id) -> dict | None:
+    url = f"{BASE_URL}/api/lessons/{lesson_id}/tasks/{task_id}"
+    try:
+        resp = session.get(url, headers={"Accept": "application/json"}, timeout=10)
+        if resp.status_code != 200:
+            return None
+        data = resp.json() if getattr(resp, "json", None) else json.loads(resp.text)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
 def _get_page_html(driver: WebDriver, page_url: str) -> tuple[str | None, bool]:
-    """Load page, wait for form or detect already-answered. Returns (html, already_answered)."""
+    """Fast page load without extra waits/checks."""
     try:
         driver.set_page_load_timeout(20)
         driver.get(page_url)
-        # Quick check: already answered -> skip
-        try:
-            html = driver.page_source
-            if is_task_already_answered(html):
-                return (None, True)
-        except Exception:
-            pass
-
-        def form_or_solved(d):
-            try:
-                d.find_element(By.CSS_SELECTOR, FORM_SELECTOR)
-                return True
-            except Exception:
-                pass
-            try:
-                d.find_element(By.CSS_SELECTOR, FORM_OR_TASKFORM)
-                return True
-            except Exception:
-                pass
-            try:
-                if is_task_already_answered(d.page_source):
-                    return True
-            except Exception:
-                pass
-            return False
-
-        try:
-            WebDriverWait(driver, FORM_WAIT_MAIN).until(form_or_solved)
-        except Exception:
-            pass
+        time.sleep(0.75)
         page_html = driver.page_source
-        # If we timed out but HTML has form, use it anyway and try to submit
         if not page_html:
             return (None, False)
-        try:
-            if is_task_already_answered(page_html):
-                return (None, True)
-        except Exception:
-            pass
-        if "taskForm" in page_html and "cm-editor" in page_html:
-            time.sleep(0.7)
-            page_html = driver.page_source
         return (page_html, False)
     except Exception:
         return (None, False)
@@ -287,9 +305,6 @@ def run_3_2(driver: WebDriver) -> None:
             print(f"[3.2] Task {task_id} ...", flush=True)
             page_url = f"{BASE_URL}/lessons/{lesson_id}/tasks/{task_id}"
             page_html, already_answered = _get_page_html(driver, page_url)
-            if already_answered:
-                print(f"[3.2] Task {task_id} already answered, skip.")
-                continue
             if not page_html or ("questions[" not in page_html and "taskForm" not in page_html):
                 print(f"[3.2] Could not load form for task {task_id}")
                 continue
@@ -299,23 +314,32 @@ def run_3_2(driver: WebDriver) -> None:
                 session.headers["X-CSRF-Token"] = page_csrf
             parsed = parse_question_page(page_html)
             form_key = parsed.get("question_form_key")
+            task_json = _get_lesson_task_json(session, lesson_id, task_id)
             if not form_key and "taskForm" in page_html and "cm-editor" in page_html:
                 code_ids = _get_code_ids_from_api(session, lesson_id, task_id)
-                if not code_ids or not code_ids.get("code_question_id"):
-                    code_ids = None
-                    for _ in range(2):
-                        time.sleep(0.3)
-                        code_ids = _get_code_ids_from_browser(driver)
-                        if code_ids and code_ids.get("code_question_id"):
-                            break
-                    if not code_ids or not code_ids.get("code_question_id"):
-                        code_ids = _get_code_ids_from_api(session, lesson_id, task_id)
                 if code_ids:
                     parsed["is_code"] = True
                     parsed["question_form_key"] = f"questions[{code_ids['code_question_id']}][]"
                     parsed["code_question_id"] = code_ids["code_question_id"]
                     parsed["test_case_execution_id"] = code_ids.get("test_case_execution_id")
                     form_key = parsed["question_form_key"]
+            # For links/drag task use lesson API ids (question/answers ids), not HTML form key parsing.
+            if parsed.get("is_drag") and task_json:
+                drag_qid, drag_map = _build_drag_payload_from_api(task_json, str(answer or ""))
+                if drag_qid is not None and drag_map:
+                    try:
+                        resp = submit_answer_3_2_drag(session, lesson_id, task_id, drag_qid, drag_map)
+                    except Exception:
+                        print(f"[3.2] Submit drag-and-drop task {task_id} failed:")
+                        traceback.print_exc()
+                        continue
+                    if resp.status_code in (200, 201, 204):
+                        preview = (resp.text or "")[:200].replace("\n", " ")
+                        print(f"[3.2] Submit lesson={lesson_id} task={task_id} -> {resp.status_code} {preview}")
+                    else:
+                        body = (resp.text or (resp.content.decode(errors="replace") if resp.content else ""))[:500]
+                        print(f"[3.2] Submit lesson={lesson_id} task={task_id} -> err {resp.status_code}: {body}")
+                    continue
             if not form_key:
                 # Drag-and-drop задачи (LinkTask) не имеют стандартного form_key в HTML.
                 if parsed.get("is_drag"):
@@ -355,8 +379,6 @@ def run_3_2(driver: WebDriver) -> None:
                     except Exception:
                         print(f"[3.2] Code task {task_id}: test execution request failed:")
                         traceback.print_exc()
-                # Даём бэкенду секунду, чтобы зафиксировать запуск тестов
-                time.sleep(1.0)
                 try:
                     resp = submit_answer_3_2_code(
                         session,

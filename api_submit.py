@@ -87,7 +87,8 @@ def submit_answer_3_2_code(
     Payload per requirements.md: only questions[id][][language] and questions[id][][source_code].
     """
     url = f"{BASE_URL}/api/lessons/{lesson_id}/tasks/{task_id}/answer_attempts"
-    referer_path = referer_path or f"/lessons/{lesson_id}/tasks/{task_id}"
+    # For 3.2 code tasks use teacher lessons referer (matches browser request flow)
+    referer_path = referer_path or f"/teacher/lessons/{lesson_id}/tasks/{task_id}"
     referer = f"{BASE_URL}{referer_path}"
     session.headers["Referer"] = referer
     session.headers["X-Referer"] = referer

@@ -1,17 +1,14 @@
 """Run format 3.1: classworks/homeworks. Submit each answer via API (no video lookup on classworks question page)."""
+import time
 import traceback
 from pathlib import Path
 
 from selenium.webdriver.chrome.webdriver import WebDriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-
 from api_submit import submit_answer_3_1
 from browser import make_session, refresh_session_from_driver
 from config import BASE_URL, EXCEL_3_1, ANSWER_SIMILARITY_THRESHOLD
 from excel_loader import load_3_1
-from page_parser import get_csrf_from_page, is_task_already_answered, parse_question_page
+from page_parser import get_csrf_from_page, parse_question_page
 from similarity import best_match
 
 
@@ -40,54 +37,10 @@ def run_3_1(driver: WebDriver) -> None:
             try:
                 driver.set_page_load_timeout(6)
                 driver.get(question_url)
-                # If task is already answered, skip without waiting for form
-                try:
-                    html = driver.page_source
-                    if is_task_already_answered(html):
-                        print(f"[3.1] Question {question_id} already answered, skip.")
-                        continue
-                except Exception:
-                    pass
-                print(f"[3.1] Page loaded, waiting for form...", flush=True)
-                form_selector = "input[name^='questions[']"
-
-                def _form_or_solved(d):
-                    try:
-                        d.find_element(By.CSS_SELECTOR, form_selector)
-                        return True
-                    except Exception:
-                        pass
-                    try:
-                        if is_task_already_answered(d.page_source):
-                            return True
-                    except Exception:
-                        pass
-                    return False
-
-                page_html = None
-                try:
-                    WebDriverWait(driver, 4.3).until(_form_or_solved)
-                    page_html = driver.page_source
-                except Exception:
-                    # Form may be inside an iframe
-                    iframes = driver.find_elements(By.TAG_NAME, "iframe")
-                    for ifr in iframes:
-                        try:
-                            driver.switch_to.frame(ifr)
-                            WebDriverWait(driver, 4.0).until(_form_or_solved)
-                            page_html = driver.execute_script("return document.documentElement.outerHTML")
-                            driver.switch_to.default_content()
-                            break
-                        except Exception:
-                            driver.switch_to.default_content()
-                            continue
-                    if not page_html:
-                        page_html = driver.page_source
+                time.sleep(0.75)
+                page_html = driver.page_source
                 if not page_html:
                     print(f"[3.1] Could not load page for question {question_id}")
-                    continue
-                if is_task_already_answered(page_html or ""):
-                    print(f"[3.1] Question {question_id} already answered, skip.")
                     continue
             except Exception:
                 print(f"[3.1] GET question {question_id} failed:")
