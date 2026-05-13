@@ -24,6 +24,32 @@ from similarity import best_match, best_matches_multiple, similarity
 SUBMIT_VERIFY_TRIES = 3
 SUBMIT_VERIFY_DELAY_SEC = 0.35
 
+# Задания trainings, для которых нужен точный multipart (не из Excel).
+# Ключ: (training_id, task_id) как строки — как в первых двух колонках таблицы.
+TRAINING_TASK_FIXED_MULTIPART: dict[tuple[str, str], list[tuple[str, str]]] = {
+    ("2988", "1208284"): [
+        ("questions[1262804][]", "10386453"),
+        ("questions[1262804][]", "10386455"),
+        ("questions[1262805][]", "Мне нравятся технологии"),
+    ],
+}
+
+
+def _apply_gender_marker(raw: Any, gender: str | None) -> Any:
+    """Заменяет <G> на выбранный пол (Мужской/Женский). Значение без маркера возвращается как есть."""
+    if gender is None or raw is None:
+        return raw
+    text = str(raw)
+    if "<G>" not in text:
+        return raw
+    return text.replace("<G>", gender)
+
+
+def _apply_gender_to_str(s: str, gender: str | None) -> str:
+    if gender is None:
+        return s
+    return s.replace("<G>", gender)
+
 def _is_training_task_already_answered(html: str) -> bool:
     """
     Более строгая проверка solved для training-задач.
@@ -356,7 +382,7 @@ def _get_page_html(driver: WebDriver, page_url: str) -> tuple[str | None, bool]:
             pass
 
 
-def run_3_3(driver: WebDriver) -> None:
+def run_3_3(driver: WebDriver, gender: str | None = None) -> None:
     path = Path(EXCEL_3_3)
     if not path.exists():
         print(f"[3.3] File not found: {path} (place test3.xlsx next to the script/exe)")
@@ -397,6 +423,7 @@ def run_3_3(driver: WebDriver) -> None:
             traceback.print_exc()
 
         for task_id, answer in rows:
+            answer = _apply_gender_marker(answer, gender)
             print(f"[3.3] Task {task_id} ...", flush=True)
             page_url = f"{BASE_URL}/trainings/{training_id}/tasks/{task_id}"
             page_html, already_answered = _get_page_html(driver, page_url)
@@ -445,7 +472,14 @@ def run_3_3(driver: WebDriver) -> None:
 
             # Универсальный обходной путь: если в Excel в ответе лежит payload (curl multipart),
             # отправляем его как есть (подходит для text/radio/drag/code-like полей).
-            raw_fields = _parse_multipart_fields_from_payload(str(answer))
+            tid_key = (str(training_id).strip(), str(task_id).strip())
+            if tid_key in TRAINING_TASK_FIXED_MULTIPART:
+                raw_fields = [
+                    (k, _apply_gender_to_str(v, gender))
+                    for k, v in TRAINING_TASK_FIXED_MULTIPART[tid_key]
+                ]
+            else:
+                raw_fields = _parse_multipart_fields_from_payload(str(answer))
             if raw_fields:
                 try:
                     resp = _submit_with_verify(
