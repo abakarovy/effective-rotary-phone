@@ -122,12 +122,16 @@ def parse_question_page(html: str) -> dict[str, Any]:
             result["options"].append((label_text, value))
         return result
 
-    # Drag-and-drop (LinkTask) detection: нет обычных input[name="questions[...]"],
-    # но есть специфичные классы LinkTask_root/LinkTask_optionsPanel.
-    if "LinkTask_root__" in html or "LinkTask_optionsPanel__" in html:
+    # Drag-and-drop (LinkTask): классы UI и/или поля questions[qid][answer_id].
+    drag_name_re = re.compile(r"^questions\[\d+\]\[\d+\]$")
+    if (
+        re.search(r"LinkTask_root", html, re.I)
+        or re.search(r"LinkTask_optionsPanel", html, re.I)
+        or re.search(r"LinkTaskRow_", html, re.I)
+        or soup.find(attrs={"name": drag_name_re})
+    ):
         result["is_drag"] = True
-        # Для drag-типа числовые id ответов есть только в payload curl, а не в HTML,
-        # поэтому form_key определить нельзя.
+        # Для drag-типа числовые id ответов есть только в payload curl / API, не в HTML label→value.
         return result
 
     # Text/textarea: name like questions[1248194][]

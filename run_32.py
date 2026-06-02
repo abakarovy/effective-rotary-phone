@@ -137,6 +137,15 @@ def _best_id_by_text(text: str, options: list[tuple[str, int]], threshold: float
     return best_id
 
 
+def _task_has_links_question(task_json: dict | None) -> bool:
+    if not isinstance(task_json, dict):
+        return False
+    for q in (task_json.get("questions") or []):
+        if isinstance(q, dict) and q.get("type") == "links":
+            return True
+    return False
+
+
 def _build_drag_payload_from_api(task_json: dict, answer_text: str) -> tuple[int | None, list[tuple[int, int]]]:
     """
     Build drag payload from lesson task API:
@@ -315,6 +324,7 @@ def run_3_2(driver: WebDriver) -> None:
             parsed = parse_question_page(page_html)
             form_key = parsed.get("question_form_key")
             task_json = _get_lesson_task_json(session, lesson_id, task_id)
+            is_drag_task = parsed.get("is_drag") or _task_has_links_question(task_json)
             if not form_key and "taskForm" in page_html and "cm-editor" in page_html:
                 code_ids = _get_code_ids_from_api(session, lesson_id, task_id)
                 if code_ids:
@@ -324,7 +334,7 @@ def run_3_2(driver: WebDriver) -> None:
                     parsed["test_case_execution_id"] = code_ids.get("test_case_execution_id")
                     form_key = parsed["question_form_key"]
             # For links/drag task use lesson API ids (question/answers ids), not HTML form key parsing.
-            if parsed.get("is_drag") and task_json:
+            if is_drag_task and task_json:
                 drag_qid, drag_map = _build_drag_payload_from_api(task_json, str(answer or ""))
                 if drag_qid is not None and drag_map:
                     try:
@@ -342,7 +352,7 @@ def run_3_2(driver: WebDriver) -> None:
                     continue
             if not form_key:
                 # Drag-and-drop задачи (LinkTask) не имеют стандартного form_key в HTML.
-                if parsed.get("is_drag"):
+                if is_drag_task:
                     print(f"[3.2] Task {task_id}: detected drag-and-drop type without form key (requires explicit payload).")
                     continue
                 print(f"[3.2] Could not find form question key for task {task_id}")

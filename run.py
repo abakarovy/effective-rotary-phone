@@ -82,8 +82,26 @@ def _seek_all_video_tabs_to_95(driver) -> None:
             driver.switch_to.window(handles[0])
 
 
+def _prompt_gender() -> str:
+    """Спрашивает пол для подстановки вместо маркера <G> в ответах из test3.xlsx."""
+    print(
+        "Подстановка <G> в ответах из Excel (test3.xlsx / 3.3):\n"
+        "  1 — Мужской\n"
+        "  2 — Женский"
+    )
+    while True:
+        raw = (input("Введите 1 или 2: ").strip() or "").lower()
+        if raw in ("1", "м", "муж", "мужской", "m"):
+            return "Мужской"
+        if raw in ("2", "ж", "жен", "женский", "f"):
+            return "Женский"
+        print("Нужно ввести 1 (Мужской) или 2 (Женский).")
+
+
 def main() -> None:
     print("Starting Chrome. Log in when the page opens, then press Enter in this terminal.")
+    gender = _prompt_gender()
+    print(f"Выбран пол: {gender} — все вхождения <G> в ответах из test3.xlsx будут заменены.\n")
     driver = create_driver()
     try:
         wait_for_login(driver)
@@ -99,7 +117,7 @@ def main() -> None:
             # _seek_all_video_tabs_to_95(driver)
         run_3_1(driver)
         run_3_2(driver)
-        run_3_3(driver)
+        run_3_3(driver, gender=gender)
         print("Done.")
     except Exception:
         traceback.print_exc()

@@ -4,6 +4,7 @@ import re
 import time
 import traceback
 from pathlib import Path
+from typing import Any
 
 from bs4 import BeautifulSoup
 from selenium.webdriver.chrome.webdriver import WebDriver
@@ -31,6 +32,12 @@ TRAINING_TASK_FIXED_MULTIPART: dict[tuple[str, str], list[tuple[str, str]]] = {
         ("questions[1262804][]", "10386453"),
         ("questions[1262804][]", "10386455"),
         ("questions[1262805][]", "Мне нравятся технологии"),
+    ],
+    # Два radio/multiselect + одно текстовое поле
+    ("2989", "1209399"): [
+        ("questions[1264138][]", "10392152"),
+        ("questions[1264138][]", "10392153"),
+        ("questions[1264139][]", "asd"),
     ],
 }
 
@@ -316,15 +323,30 @@ def _parse_drag_pairs_from_excel(answer_text: str) -> list[tuple[str, str]]:
     return pairs
 
 
+def _normalize_drag_match_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip())
+
+
 def _best_id_by_text(text: str, options: list[tuple[str, int]], threshold: float = 0.7) -> int | None:
     best_ratio = 0.0
     best_id = None
+    needle = _normalize_drag_match_text(text)
     for opt_text, opt_id in options:
-        r = similarity(text or "", opt_text or "")
+        r = similarity(needle, _normalize_drag_match_text(opt_text))
         if r >= threshold and r > best_ratio:
             best_ratio = r
             best_id = opt_id
     return best_id
+
+
+def _task_has_links_question(task_json: dict | None) -> bool:
+    """Training task API: question type links = drag-and-drop сопоставление."""
+    if not isinstance(task_json, dict):
+        return False
+    for q in (task_json.get("questions") or []):
+        if isinstance(q, dict) and q.get("type") == "links":
+            return True
+    return False
 
 
 def _build_training_drag_payload_from_api(task_json: dict, answer_text: str) -> tuple[int | None, list[tuple[int, int]]]:
@@ -448,6 +470,9 @@ def run_3_3(driver: WebDriver, gender: str | None = None) -> None:
             parsed = parse_question_page(page_html)
             form_key = parsed.get("question_form_key")
             task_json = _get_training_task_json(session, submit_training_id, submit_task_id)
+            is_drag_task = parsed.get("is_drag") or _task_has_links_question(task_json)
+            if is_drag_task and not parsed.get("is_drag"):
+                print(f"[3.3] Task {task_id}: drag (links) detected from API JSON")
             expected_qids = _extract_question_ids(task_json)
             pre_user_answer_id = task_json.get("user_answer_id") if isinstance(task_json, dict) else None
 
@@ -479,6 +504,51 @@ def run_3_3(driver: WebDriver, gender: str | None = None) -> None:
                     for k, v in TRAINING_TASK_FIXED_MULTIPART[tid_key]
                 ]
             else:
+                raw_fields = []
+
+            # Drag-and-drop (links): до generic multipart, т.к. Excel часто в формате [слева] -> [справа].
+            if is_drag_task:
+                drag_qid, drag_mappings = _parse_drag_payload(str(answer))
+                if (drag_qid is None or not drag_mappings) and task_json:
+                    drag_qid, drag_mappings = _build_training_drag_payload_from_api(
+                        task_json, str(answer or "")
+                    )
+                if drag_qid is not None and drag_mappings:
+                    try:
+                        resp = _submit_with_verify(
+                            lambda: submit_answer_training_drag(
+                                session,
+                                submit_training_id,
+                                submit_task_id,
+                                drag_qid,
+                                drag_mappings,
+                            )
+                        )
+                    except Exception:
+                        print(f"[3.3] Submit drag task {task_id} failed:")
+                        traceback.print_exc()
+                        continue
+                    if resp.status_code in (200, 201, 204):
+                        preview = (resp.text or "")[:200].replace("\n", " ")
+                        print(
+                            f"[3.3] Submit training={submit_training_id} task={submit_task_id} "
+                            f"-> {resp.status_code} {preview}"
+                        )
+                    else:
+                        body = (
+                            resp.text
+                            or (resp.content.decode(errors="replace") if resp.content else "")
+                        )[:500]
+                        print(
+                            f"[3.3] Submit training={submit_training_id} task={submit_task_id} "
+                            f"-> err {resp.status_code}: {body}"
+                        )
+                    time.sleep(0.2)
+                    continue
+                print(f"[3.3] Drag task {task_id}: payload not found in Excel answer, skip.")
+                continue
+
+            if not raw_fields:
                 raw_fields = _parse_multipart_fields_from_payload(str(answer))
             if raw_fields:
                 try:
@@ -492,38 +562,6 @@ def run_3_3(driver: WebDriver, gender: str | None = None) -> None:
                     )
                 except Exception:
                     print(f"[3.3] Submit task {task_id} with raw payload failed:")
-                    traceback.print_exc()
-                    continue
-                if resp.status_code in (200, 201, 204):
-                    preview = (resp.text or "")[:200].replace("\n", " ")
-                    print(f"[3.3] Submit training={submit_training_id} task={submit_task_id} -> {resp.status_code} {preview}")
-                else:
-                    body = (resp.text or (resp.content.decode(errors="replace") if resp.content else ""))[:500]
-                    print(f"[3.3] Submit training={submit_training_id} task={submit_task_id} -> err {resp.status_code}: {body}")
-                time.sleep(0.2)
-                continue
-
-            # Drag-and-drop in trainings: use explicit payload from Excel.
-            if parsed.get("is_drag"):
-                drag_qid, drag_mappings = _parse_drag_payload(str(answer))
-                if (drag_qid is None or not drag_mappings) and task_json:
-                    # Fallback: build mapping by text using API question/answers ids.
-                    drag_qid, drag_mappings = _build_training_drag_payload_from_api(task_json, str(answer or ""))
-                if drag_qid is None or not drag_mappings:
-                    print(f"[3.3] Drag task {task_id}: payload not found in Excel answer, skip.")
-                    continue
-                try:
-                    resp = _submit_with_verify(
-                        lambda: submit_answer_training_drag(
-                            session,
-                            submit_training_id,
-                            submit_task_id,
-                            drag_qid,
-                            drag_mappings,
-                        )
-                    )
-                except Exception:
-                    print(f"[3.3] Submit drag task {task_id} failed:")
                     traceback.print_exc()
                     continue
                 if resp.status_code in (200, 201, 204):
