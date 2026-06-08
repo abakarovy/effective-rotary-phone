@@ -667,6 +667,9 @@
    'C:\\Program '
    'Files\\WindowsApps\\PythonSoftwareFoundation.Python.3.13_3.13.3568.0_x64__qbz5n2kfra8p0\\Lib\\doctest.py',
    'PYMODULE'),
+  ('drag_utils',
+   'C:\\Users\\Maga\\Documents\\GitHub\\effective-rotary-phone\\drag_utils.py',
+   'PYMODULE'),
   ('email',
    'C:\\Program '
    'Files\\WindowsApps\\PythonSoftwareFoundation.Python.3.13_3.13.3568.0_x64__qbz5n2kfra8p0\\Lib\\email\\__init__.py',
@@ -834,6 +837,9 @@
   ('http.server',
    'C:\\Program '
    'Files\\WindowsApps\\PythonSoftwareFoundation.Python.3.13_3.13.3568.0_x64__qbz5n2kfra8p0\\Lib\\http\\server.py',
+   'PYMODULE'),
+  ('http_retry',
+   'C:\\Users\\Maga\\Documents\\GitHub\\effective-rotary-phone\\http_retry.py',
    'PYMODULE'),
   ('idna',
    'C:\\Users\\Maga\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python313\\site-packages\\idna\\__init__.py',
@@ -2072,9 +2078,6 @@
   ('packaging.version',
    'C:\\Users\\Maga\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python313\\site-packages\\packaging\\version.py',
    'PYMODULE'),
-  ('page_parser',
-   'C:\\Users\\Maga\\Documents\\GitHub\\effective-rotary-phone\\page_parser.py',
-   'PYMODULE'),
   ('pathlib',
    'C:\\Program '
    'Files\\WindowsApps\\PythonSoftwareFoundation.Python.3.13_3.13.3568.0_x64__qbz5n2kfra8p0\\Lib\\pathlib\\__init__.py',
@@ -2921,6 +2924,9 @@
   ('tarfile',
    'C:\\Program '
    'Files\\WindowsApps\\PythonSoftwareFoundation.Python.3.13_3.13.3568.0_x64__qbz5n2kfra8p0\\Lib\\tarfile.py',
+   'PYMODULE'),
+  ('task_api',
+   'C:\\Users\\Maga\\Documents\\GitHub\\effective-rotary-phone\\task_api.py',
    'PYMODULE'),
   ('tempfile',
    'C:\\Program '

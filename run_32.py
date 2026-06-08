@@ -16,10 +16,12 @@ from api_submit import (
     submit_code_test_execution,
 )
 from browser import make_session, refresh_session_from_driver
+from http_retry import request_with_retry
 from config import BASE_URL, EXCEL_3_2, ANSWER_SIMILARITY_THRESHOLD
 from excel_loader import load_3_2
-from page_parser import get_csrf_from_page, is_task_already_answered, parse_question_page
+from drag_utils import build_drag_payload_from_api, parse_drag_pairs_from_excel
 from similarity import best_match, best_matches_multiple, similarity
+from task_api import fetch_lesson_task, parse_task_from_api, task_has_links_question
 
 FORM_SELECTOR = "input[name^='questions[']"
 
@@ -106,91 +108,13 @@ def _parse_drag_payload(answer_text: str) -> tuple[int | None, list[tuple[int, i
     return question_id, mappings
 
 
-def _parse_drag_pairs_from_excel(answer_text: str) -> list[tuple[str, str]]:
-    """Parse '[left] -> [right]' pairs from Excel cell."""
-    if not answer_text:
-        return []
-    pairs = []
-    for raw in str(answer_text).splitlines():
-        if "->" not in raw:
-            continue
-        left, right = raw.split("->", 1)
-        left = left.strip()
-        right = right.strip()
-        if left.startswith("[") and left.endswith("]"):
-            left = left[1:-1].strip()
-        if right.startswith("[") and right.endswith("]"):
-            right = right[1:-1].strip()
-        if left and right:
-            pairs.append((left, right))
-    return pairs
-
-
-def _best_id_by_text(text: str, options: list[tuple[str, int]], threshold: float = 0.7) -> int | None:
-    best_ratio = 0.0
-    best_id = None
-    for opt_text, opt_id in options:
-        r = similarity(text or "", opt_text or "")
-        if r >= threshold and r > best_ratio:
-            best_ratio = r
-            best_id = opt_id
-    return best_id
-
-
-def _task_has_links_question(task_json: dict | None) -> bool:
-    if not isinstance(task_json, dict):
-        return False
-    for q in (task_json.get("questions") or []):
-        if isinstance(q, dict) and q.get("type") == "links":
-            return True
-    return False
-
-
-def _build_drag_payload_from_api(task_json: dict, answer_text: str) -> tuple[int | None, list[tuple[int, int]]]:
-    """
-    Build drag payload from lesson task API:
-      questions[question_id][answers.id] = available_answers.id
-    using Excel pairs '[left] -> [right]'.
-    """
-    if not isinstance(task_json, dict):
-        return None, []
-    questions = task_json.get("questions") or []
-    q_links = None
-    for q in questions:
-        if isinstance(q, dict) and q.get("type") == "links":
-            q_links = q
-            break
-    if not q_links:
-        return None, []
-    qid = q_links.get("id")
-    if qid is None:
-        return None, []
-    left_opts = []
-    for a in (q_links.get("answers") or []):
-        if isinstance(a, dict) and a.get("id") is not None:
-            left_opts.append((str(a.get("content") or "").strip(), int(a["id"])))
-    right_opts = []
-    for a in (q_links.get("available_answers") or []):
-        if isinstance(a, dict) and a.get("id") is not None:
-            right_opts.append((str(a.get("content") or "").strip(), int(a["id"])))
-    pairs = _parse_drag_pairs_from_excel(answer_text)
-    mappings: list[tuple[int, int]] = []
-    used_left = set()
-    for left_txt, right_txt in pairs:
-        left_id = _best_id_by_text(left_txt, left_opts, threshold=ANSWER_SIMILARITY_THRESHOLD)
-        right_id = _best_id_by_text(right_txt, right_opts, threshold=ANSWER_SIMILARITY_THRESHOLD)
-        if left_id is None or right_id is None or left_id in used_left:
-            continue
-        used_left.add(left_id)
-        mappings.append((left_id, right_id))
-    return int(qid), mappings
-
-
 def _get_code_ids_from_api(session, lesson_id, task_id) -> dict | None:
     """Try GET task API JSON and extract code_question_id and test_case_execution_id."""
     url = f"{BASE_URL}/api/lessons/{lesson_id}/tasks/{task_id}"
     try:
-        resp = session.get(url, headers={"Accept": "application/json"}, timeout=10)
+        resp = request_with_retry(
+            session, "GET", url, headers={"Accept": "application/json"}, timeout=10, label="lesson code ids"
+        )
         if resp.status_code != 200:
             return None
         data = resp.json() if getattr(resp, "json", None) else json.loads(resp.text)
@@ -226,38 +150,6 @@ def _get_code_ids_from_api(session, lesson_id, task_id) -> dict | None:
         return None
 
 
-def _get_lesson_task_json(session, lesson_id, task_id) -> dict | None:
-    url = f"{BASE_URL}/api/lessons/{lesson_id}/tasks/{task_id}"
-    try:
-        resp = session.get(url, headers={"Accept": "application/json"}, timeout=10)
-        if resp.status_code != 200:
-            return None
-        data = resp.json() if getattr(resp, "json", None) else json.loads(resp.text)
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
-
-
-def _get_page_html(driver: WebDriver, page_url: str) -> tuple[str | None, bool]:
-    """Fast page load without extra waits/checks."""
-    try:
-        driver.set_page_load_timeout(20)
-        driver.get(page_url)
-        time.sleep(0.75)
-        page_html = driver.page_source
-        if not page_html:
-            return (None, False)
-        return (page_html, False)
-    except Exception:
-        return (None, False)
-    finally:
-        try:
-            driver.switch_to.default_content()
-            driver.set_page_load_timeout(300)
-        except Exception:
-            pass
-
-
 def run_3_2(driver: WebDriver) -> None:
     path_32 = Path(EXCEL_3_2)
     if not path_32.exists():
@@ -274,6 +166,7 @@ def run_3_2(driver: WebDriver) -> None:
         print(f"[3.2] Lesson {lesson_id}: submitting {len(rows)} answers")
         try:
             session = make_session(driver)
+            refresh_session_from_driver(driver, session)
         except Exception:
             traceback.print_exc()
             continue
@@ -312,30 +205,17 @@ def run_3_2(driver: WebDriver) -> None:
 
             resp = None
             print(f"[3.2] Task {task_id} ...", flush=True)
-            page_url = f"{BASE_URL}/lessons/{lesson_id}/tasks/{task_id}"
-            page_html, already_answered = _get_page_html(driver, page_url)
-            if not page_html or ("questions[" not in page_html and "taskForm" not in page_html):
-                print(f"[3.2] Could not load form for task {task_id}")
+            task_json = fetch_lesson_task(session, lesson_id, task_id)
+            if not task_json:
+                print(f"[3.2] Could not load task API for task {task_id}")
                 continue
-            refresh_session_from_driver(driver, session)
-            page_csrf = get_csrf_from_page(page_html)
-            if page_csrf:
-                session.headers["X-CSRF-Token"] = page_csrf
-            parsed = parse_question_page(page_html)
+            parsed = parse_task_from_api(task_json, api_format="lesson")
             form_key = parsed.get("question_form_key")
-            task_json = _get_lesson_task_json(session, lesson_id, task_id)
-            is_drag_task = parsed.get("is_drag") or _task_has_links_question(task_json)
-            if not form_key and "taskForm" in page_html and "cm-editor" in page_html:
-                code_ids = _get_code_ids_from_api(session, lesson_id, task_id)
-                if code_ids:
-                    parsed["is_code"] = True
-                    parsed["question_form_key"] = f"questions[{code_ids['code_question_id']}][]"
-                    parsed["code_question_id"] = code_ids["code_question_id"]
-                    parsed["test_case_execution_id"] = code_ids.get("test_case_execution_id")
-                    form_key = parsed["question_form_key"]
-            # For links/drag task use lesson API ids (question/answers ids), not HTML form key parsing.
+            is_drag_task = parsed.get("is_drag") or task_has_links_question(task_json)
             if is_drag_task and task_json:
-                drag_qid, drag_map = _build_drag_payload_from_api(task_json, str(answer or ""))
+                drag_qid, drag_map = build_drag_payload_from_api(
+                    task_json, str(answer or ""), threshold=ANSWER_SIMILARITY_THRESHOLD
+                )
                 if drag_qid is not None and drag_map:
                     try:
                         resp = submit_answer_3_2_drag(session, lesson_id, task_id, drag_qid, drag_map)
@@ -367,11 +247,7 @@ def run_3_2(driver: WebDriver) -> None:
                     print(f"[3.2] Code task {task_id}: empty code in Excel, skip.")
                     continue
                 # Сначала запускаем тесты через /api/wk/test_case_executions
-                try:
-                    ids_for_tests = _get_code_ids_from_api(session, lesson_id, task_id)
-                    test_question_id = ids_for_tests.get("code_question_id") if ids_for_tests else None
-                except Exception:
-                    test_question_id = None
+                test_question_id = parsed.get("code_question_id")
                 if test_question_id:
                     try:
                         resp_test = submit_code_test_execution(
@@ -410,34 +286,119 @@ def run_3_2(driver: WebDriver) -> None:
                     print(f"[3.2] Submit task {task_id} failed:")
                     traceback.print_exc()
                     continue
-            elif parsed.get("is_multiple_choice"):
-                options = parsed.get("options") or []
-                answer_values = best_matches_multiple(
-                    normalized_answer, options, threshold=ANSWER_SIMILARITY_THRESHOLD
-                )
-                if not answer_values:
-                    print(f"[3.2] No matching option(s) for answer '{answer}' (task {task_id}), skip.")
-                    continue
-                try:
-                    resp = submit_answer_3_2_multiple(
-                        session, lesson_id, task_id, form_key, answer_values
-                    )
-                except Exception:
-                    print(f"[3.2] Submit task {task_id} failed:")
-                    traceback.print_exc()
-                    continue
             else:
                 options = parsed.get("options") or []
-                answer_value = best_match(normalized_answer, options, threshold=ANSWER_SIMILARITY_THRESHOLD)
-                if answer_value is None:
-                    print(f"[3.2] No matching option for answer '{answer}' (task {task_id}), skip.")
-                    continue
-                try:
-                    resp = submit_answer_3_2(session, lesson_id, task_id, form_key, answer_value)
-                except Exception:
-                    print(f"[3.2] Submit task {task_id} failed:")
-                    traceback.print_exc()
-                    continue
+                referer_task = f"/teacher/lessons/{lesson_id}/tasks/{task_id}"
+                if options:
+                    qid = parsed.get("question_id")
+                    if parsed.get("is_multiple_choice"):
+                        answer_values = best_matches_multiple(
+                            normalized_answer, options, threshold=ANSWER_SIMILARITY_THRESHOLD
+                        )
+                        if not answer_values:
+                            answer_values = best_matches_multiple(
+                                normalized_answer, options, threshold=0.5
+                            )
+                        if not answer_values:
+                            print(
+                                f"[3.2] No matching option(s) for answer '{answer}' "
+                                f"(task {task_id}), skip."
+                            )
+                            continue
+                        checkbox_key = (
+                            f"questions[{qid}][]" if qid is not None else form_key
+                        )
+                        print(
+                            f"[3.2] Task {task_id}: checkbox submit {checkbox_key}="
+                            f"{answer_values} ({len(answer_values)} value(s))"
+                        )
+                        try:
+                            resp = submit_answer_3_2_multiple(
+                                session,
+                                lesson_id,
+                                task_id,
+                                checkbox_key,
+                                answer_values,
+                                referer_path=referer_task,
+                            )
+                        except Exception:
+                            print(f"[3.2] Submit task {task_id} failed:")
+                            traceback.print_exc()
+                            continue
+                    else:
+                        answer_value = best_match(
+                            normalized_answer, options, threshold=ANSWER_SIMILARITY_THRESHOLD
+                        )
+                        if answer_value is None:
+                            answer_values = best_matches_multiple(
+                                normalized_answer, options, threshold=0.5
+                            )
+                            if len(answer_values) > 1:
+                                checkbox_key = (
+                                    f"questions[{qid}][]" if qid is not None else form_key
+                                )
+                                print(
+                                    f"[3.2] Task {task_id}: multi-part answer -> "
+                                    f"checkbox {checkbox_key}={answer_values}"
+                                )
+                                try:
+                                    resp = submit_answer_3_2_multiple(
+                                        session,
+                                        lesson_id,
+                                        task_id,
+                                        checkbox_key,
+                                        answer_values,
+                                        referer_path=referer_task,
+                                    )
+                                except Exception:
+                                    print(f"[3.2] Submit task {task_id} failed:")
+                                    traceback.print_exc()
+                                    continue
+                            elif len(answer_values) == 1:
+                                answer_value = answer_values[0]
+                            else:
+                                print(
+                                    f"[3.2] No matching option for answer '{answer}' "
+                                    f"(task {task_id}), skip."
+                                )
+                                continue
+                        radio_key = (
+                            f"questions[{qid}]" if qid is not None else form_key
+                        )
+                        print(
+                            f"[3.2] Task {task_id}: radio submit {radio_key}={answer_value}"
+                        )
+                        try:
+                            resp = submit_answer_3_2(
+                                session,
+                                lesson_id,
+                                task_id,
+                                radio_key,
+                                answer_value,
+                                referer_path=referer_task,
+                            )
+                        except Exception:
+                            print(f"[3.2] Submit task {task_id} failed:")
+                            traceback.print_exc()
+                            continue
+                else:
+                    answer_value = str(normalized_answer).strip() if normalized_answer is not None else ""
+                    if not answer_value:
+                        print(f"[3.2] Task {task_id}: empty answer, skip.")
+                        continue
+                    try:
+                        resp = submit_answer_3_2(
+                            session,
+                            lesson_id,
+                            task_id,
+                            form_key,
+                            answer_value,
+                            referer_path=referer_task,
+                        )
+                    except Exception:
+                        print(f"[3.2] Submit task {task_id} failed:")
+                        traceback.print_exc()
+                        continue
             if resp.status_code in (200, 201, 204):
                 preview = (resp.text or "")[:200].replace("\n", " ")
                 print(f"[3.2] Submit lesson={lesson_id} task={task_id} -> {resp.status_code} {preview}")

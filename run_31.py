@@ -1,15 +1,15 @@
-"""Run format 3.1: classworks/homeworks. Submit each answer via API (no video lookup on classworks question page)."""
-import time
+"""Run format 3.1: classworks/homeworks. Submit each answer via API (no page load)."""
 import traceback
 from pathlib import Path
 
 from selenium.webdriver.chrome.webdriver import WebDriver
-from api_submit import submit_answer_3_1
+from api_submit import submit_answer_3_1, submit_answer_3_1_drag
 from browser import make_session, refresh_session_from_driver
-from config import BASE_URL, EXCEL_3_1, ANSWER_SIMILARITY_THRESHOLD
+from config import EXCEL_3_1, ANSWER_SIMILARITY_THRESHOLD
+from drag_utils import build_drag_payload_from_api, parse_drag_pairs_from_excel
 from excel_loader import load_3_1
-from page_parser import get_csrf_from_page, parse_question_page
 from similarity import best_match
+from task_api import fetch_homework_task, parse_task_from_api, task_has_links_question
 
 
 def run_3_1(driver: WebDriver) -> None:
@@ -28,41 +28,69 @@ def run_3_1(driver: WebDriver) -> None:
         print(f"[3.1] Classwork {classwork_id}: submitting {len(rows)} answers")
         try:
             session = make_session(driver)
+            refresh_session_from_driver(driver, session)
         except Exception:
             traceback.print_exc()
             continue
         for question_id, answer in rows:
             print(f"[3.1] Question {question_id} ...", flush=True)
-            question_url = f"{BASE_URL}/classworks/{classwork_id}/tasks/{question_id}?page=1"
             try:
-                driver.set_page_load_timeout(6)
-                driver.get(question_url)
-                time.sleep(0.75)
-                page_html = driver.page_source
-                if not page_html:
-                    print(f"[3.1] Could not load page for question {question_id}")
-                    continue
+                task_json = fetch_homework_task(session, classwork_id, question_id)
             except Exception:
-                print(f"[3.1] GET question {question_id} failed:")
+                print(f"[3.1] API GET question {question_id} failed:")
                 traceback.print_exc()
                 continue
-            finally:
-                try:
-                    driver.switch_to.default_content()
-                    driver.set_page_load_timeout(300)
-                except Exception:
-                    pass
-            if "questions[" not in page_html and "taskForm" not in page_html:
-                print(f"[3.1] Page has no form, question {question_id}")
+            if not task_json:
+                print(f"[3.1] Could not load task API for question {question_id}")
                 continue
-            refresh_session_from_driver(driver, session)
-            page_csrf = get_csrf_from_page(page_html)
-            if page_csrf:
-                session.headers["X-CSRF-Token"] = page_csrf
-            parsed = parse_question_page(page_html)
+
+            parsed = parse_task_from_api(task_json, api_format="homework")
+            is_drag = parsed.get("is_drag") or task_has_links_question(task_json)
+
+            if is_drag:
+                drag_qid, drag_map = build_drag_payload_from_api(
+                    task_json,
+                    str(answer or ""),
+                    threshold=ANSWER_SIMILARITY_THRESHOLD,
+                )
+                if not drag_map:
+                    pairs = parse_drag_pairs_from_excel(str(answer or ""))
+                    print(
+                        f"[3.1] Drag question {question_id}: "
+                        f"parsed {len(pairs)} pair(s) from Excel, matched 0 (check text vs API options)"
+                    )
+                    continue
+                try:
+                    resp = submit_answer_3_1_drag(
+                        session,
+                        classwork_id,
+                        question_id,
+                        drag_qid,
+                        drag_map,
+                    )
+                except Exception:
+                    print(f"[3.1] Submit drag question {question_id} failed:")
+                    traceback.print_exc()
+                    continue
+                if resp.status_code in (200, 201, 204):
+                    preview = (resp.text or "")[:200].replace("\n", " ")
+                    print(
+                        f"[3.1] Submit drag classwork={classwork_id} question={question_id} "
+                        f"-> {resp.status_code} {preview}"
+                    )
+                else:
+                    body = (
+                        resp.text or (resp.content.decode(errors="replace") if resp.content else "")
+                    )[:500]
+                    print(
+                        f"[3.1] Submit drag classwork={classwork_id} question={question_id} "
+                        f"-> err {resp.status_code}: {body}"
+                    )
+                continue
+
             form_key = parsed.get("question_form_key")
             if not form_key:
-                print(f"[3.1] Could not find form question key for question {question_id}")
+                print(f"[3.1] Could not parse task API for question {question_id}")
                 continue
             if parsed.get("is_text_input"):
                 answer_value = str(answer).strip() if answer is not None else ""

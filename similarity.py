@@ -25,6 +25,10 @@ def best_match(
     answer_str = str(answer).strip() if answer is not None else ""
     if not answer_str:
         return None
+    # Excel may already contain option id (e.g. 10392265 for select/radio).
+    for _text, value in options:
+        if str(value).strip() == answer_str:
+            return str(value)
     best_ratio = 0.0
     best_value = None
     for text, value in options:
@@ -48,7 +52,7 @@ def best_matches_multiple(
     answer_str = str(answer).strip() if answer is not None else ""
     if not answer_str:
         return []
-    parts = [s.strip() for s in re.split(r"[,;\|\n]+", answer_str) if s.strip()]
+    parts = [s.strip() for s in re.split(r"(?:\.,|[,;\|\n])+", answer_str) if s.strip()]
     seen = set()
     result = []
     for part in parts:

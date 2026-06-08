@@ -4,6 +4,7 @@ from typing import Any
 import requests
 
 from config import BASE_URL
+from http_retry import request_with_retry
 
 
 def submit_answer_3_1(
@@ -27,8 +28,31 @@ def submit_answer_3_1(
     # requests will build multipart; we need to send as form data with one key
     # Actually the API expects multipart with Content-Disposition: form-data; name="questions[123]"
     payload = {form_question_key: str(answer_value)}
-    resp = session.post(url, files=[(k, (None, v)) for k, v in payload.items()])
-    return resp
+    return request_with_retry(
+        session, "POST", url, files=[(k, (None, v)) for k, v in payload.items()], label="3.1 submit"
+    )
+
+
+def submit_answer_3_1_drag(
+    session: requests.Session,
+    classwork_id: int | str,
+    question_id: int | str,
+    drag_question_id: int | str,
+    mappings: list[tuple[int | str, int | str]],
+    referer_path: str | None = None,
+) -> requests.Response:
+    """POST drag-and-drop (links) for homework/classworks 3.1."""
+    url = f"{BASE_URL}/api/homeworks/{classwork_id}/tasks/{question_id}/answer_attempts"
+    referer_path = referer_path or f"/classworks/{classwork_id}/tasks/{question_id}?page=1"
+    referer = f"{BASE_URL}{referer_path}"
+    session.headers["Referer"] = referer
+    session.headers["X-Referer"] = referer
+
+    files_payload: list[tuple[str, tuple[None, str]]] = []
+    base = f"questions[{drag_question_id}]"
+    for from_id, to_id in mappings:
+        files_payload.append((f"{base}[{from_id}]", (None, str(to_id))))
+    return request_with_retry(session, "POST", url, files=files_payload, label="3.1 drag")
 
 
 def submit_answer_3_2(
@@ -47,8 +71,9 @@ def submit_answer_3_2(
     session.headers["X-Referer"] = referer
 
     payload = {form_question_key: str(answer_value)}
-    resp = session.post(url, files=[(k, (None, v)) for k, v in payload.items()])
-    return resp
+    return request_with_retry(
+        session, "POST", url, files=[(k, (None, v)) for k, v in payload.items()], label="3.2 submit"
+    )
 
 
 def submit_answer_3_2_multiple(
@@ -63,14 +88,13 @@ def submit_answer_3_2_multiple(
     Payload: one form-data part per selected value, all with name=form_question_key (e.g. questions[1207768][]).
     """
     url = f"{BASE_URL}/api/lessons/{lesson_id}/tasks/{task_id}/answer_attempts"
-    referer_path = referer_path or f"/lessons/{lesson_id}/tasks/{task_id}"
+    referer_path = referer_path or f"/teacher/lessons/{lesson_id}/tasks/{task_id}"
     referer = f"{BASE_URL}{referer_path}"
     session.headers["Referer"] = referer
     session.headers["X-Referer"] = referer
 
     payload = [(form_question_key, (None, str(v))) for v in answer_values]
-    resp = session.post(url, files=payload)
-    return resp
+    return request_with_retry(session, "POST", url, files=payload, label="3.2 multiple")
 
 
 def submit_answer_3_2_code(
@@ -99,8 +123,7 @@ def submit_answer_3_2_code(
         (f"{base}[language]", (None, language)),
         (f"{base}[source_code]", (None, source_code_bytes, "text/plain; charset=utf-8")),
     ]
-    resp = session.post(url, files=payload)
-    return resp
+    return request_with_retry(session, "POST", url, files=payload, label="3.2 code")
 
 
 def submit_code_test_execution(
@@ -128,8 +151,7 @@ def submit_code_test_execution(
         "language": language,
         "source_code": source_code,
     }
-    resp = session.post(url, json=payload_json)
-    return resp
+    return request_with_retry(session, "POST", url, json=payload_json, label="3.2 test run")
 
 
 def submit_answer_3_2_drag(
@@ -158,8 +180,25 @@ def submit_answer_3_2_drag(
         name = f"{base}[{from_id}]"
         files_payload.append((name, (None, str(to_id))))
 
-    resp = session.post(url, files=files_payload)
-    return resp
+    return request_with_retry(session, "POST", url, files=files_payload, label="3.2 drag")
+
+
+def submit_answer_training_multiple(
+    session: requests.Session,
+    training_id: int | str,
+    task_id: int | str,
+    form_question_key: str,
+    answer_values: list[str | int],
+    referer_path: str | None = None,
+) -> requests.Response:
+    """POST trainings answer_attempts with repeated questions[id][] (checkbox)."""
+    url = f"{BASE_URL}/api/trainings/{training_id}/tasks/{task_id}/answer_attempts"
+    referer_path = referer_path or f"/trainings/{training_id}/tasks/{task_id}"
+    referer = f"{BASE_URL}{referer_path}"
+    session.headers["Referer"] = referer
+    session.headers["X-Referer"] = referer
+    files_payload = [(form_question_key, (None, str(v))) for v in answer_values]
+    return request_with_retry(session, "POST", url, files=files_payload, label="3.3 multi-choice")
 
 
 def submit_answer_training(
@@ -178,7 +217,9 @@ def submit_answer_training(
     session.headers["X-Referer"] = referer
 
     payload = {form_question_key: str(answer_value)}
-    return session.post(url, files=[(k, (None, v)) for k, v in payload.items()])
+    return request_with_retry(
+        session, "POST", url, files=[(k, (None, v)) for k, v in payload.items()], label="3.3 submit"
+    )
 
 
 def submit_answer_training_code(
@@ -206,7 +247,7 @@ def submit_answer_training_code(
     ]
     if test_case_execution_id is not None:
         payload.append((f"{base}[test_case_execution_id]", (None, str(test_case_execution_id))))
-    return session.post(url, files=payload)
+    return request_with_retry(session, "POST", url, files=payload, label="3.3 code")
 
 
 def submit_answer_training_drag(
@@ -228,7 +269,7 @@ def submit_answer_training_drag(
     base = f"questions[{question_id}]"
     for from_id, to_id in mappings:
         files_payload.append((f"{base}[{from_id}]", (None, str(to_id))))
-    return session.post(url, files=files_payload)
+    return request_with_retry(session, "POST", url, files=files_payload, label="3.3 drag")
 
 
 def submit_answer_training_raw(
@@ -245,7 +286,7 @@ def submit_answer_training_raw(
     session.headers["Referer"] = referer
     session.headers["X-Referer"] = referer
     files_payload = [(k, (None, str(v))) for k, v in fields]
-    return session.post(url, files=files_payload)
+    return request_with_retry(session, "POST", url, files=files_payload, label="3.3 raw")
 
 
 def finish_training(
@@ -259,7 +300,9 @@ def finish_training(
     referer = f"{BASE_URL}{referer_path}"
     session.headers["Referer"] = referer
     session.headers["X-Referer"] = referer
-    return session.post(url)
+    session.headers["Origin"] = BASE_URL
+    # Empty body POST (browser: Content-Length: 0); do not pass data= to avoid wrong Content-Type.
+    return request_with_retry(session, "POST", url, label="3.3 finish")
 
 
 def start_training(
@@ -273,7 +316,7 @@ def start_training(
     referer = f"{BASE_URL}{referer_path}"
     session.headers["Referer"] = referer
     session.headers["X-Referer"] = referer
-    return session.post(url)
+    return request_with_retry(session, "POST", url, label="3.3 start")
 
 
 def submit_answer_3_2_drag(
@@ -302,5 +345,4 @@ def submit_answer_3_2_drag(
         name = f"{base}[{from_id}]"
         files_payload.append((name, (None, str(to_id))))
 
-    resp = session.post(url, files=files_payload)
-    return resp
+    return request_with_retry(session, "POST", url, files=files_payload, label="3.2 drag")

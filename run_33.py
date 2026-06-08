@@ -12,15 +12,18 @@ from api_submit import (
     finish_training,
     start_training,
     submit_answer_training,
+    submit_answer_training_multiple,
     submit_answer_training_code,
     submit_answer_training_drag,
     submit_answer_training_raw,
 )
 from browser import make_session, refresh_session_from_driver
+from http_retry import request_with_retry
 from config import ANSWER_SIMILARITY_THRESHOLD, BASE_URL, EXCEL_3_3
 from excel_loader import load_3_3
-from page_parser import get_csrf_from_page, parse_question_page
+from drag_utils import build_drag_payload_from_api, parse_drag_pairs_from_excel
 from similarity import best_match, best_matches_multiple, similarity
+from task_api import fetch_training_task, parse_task_from_api, task_has_links_question
 
 SUBMIT_VERIFY_TRIES = 3
 SUBMIT_VERIFY_DELAY_SEC = 0.35
@@ -189,7 +192,9 @@ def _get_training_code_ids_from_api(session, training_id, task_id) -> dict | Non
     """Try GET training task API JSON and extract code_question_id and test_case_execution_id."""
     url = f"{BASE_URL}/api/trainings/{training_id}/tasks/{task_id}"
     try:
-        resp = session.get(url, headers={"Accept": "application/json"}, timeout=10)
+        resp = request_with_retry(
+            session, "GET", url, headers={"Accept": "application/json"}, timeout=10, label="training code ids"
+        )
         if resp.status_code != 200:
             return None
         data = resp.json() if getattr(resp, "json", None) else json.loads(resp.text)
@@ -216,18 +221,6 @@ def _get_training_code_ids_from_api(session, training_id, task_id) -> dict | Non
             "code_question_id": int(qid) if not isinstance(qid, int) else qid,
             "test_case_execution_id": str(tceid) if tceid is not None else None,
         }
-    except Exception:
-        return None
-
-
-def _get_training_task_json(session, training_id, task_id) -> dict | None:
-    url = f"{BASE_URL}/api/trainings/{training_id}/tasks/{task_id}"
-    try:
-        resp = session.get(url, headers={"Accept": "application/json"}, timeout=10)
-        if resp.status_code != 200:
-            return None
-        data = resp.json() if getattr(resp, "json", None) else json.loads(resp.text)
-        return data if isinstance(data, dict) else None
     except Exception:
         return None
 
@@ -278,7 +271,7 @@ def _verify_training_submit(
     """Poll task API briefly and ensure answer actually persisted."""
     for _ in range(SUBMIT_VERIFY_TRIES):
         time.sleep(SUBMIT_VERIFY_DELAY_SEC)
-        cur = _get_training_task_json(session, training_id, task_id)
+        cur = fetch_training_task(session, training_id, task_id)
         if not isinstance(cur, dict):
             continue
         cur_ua_id = cur.get("user_answer_id")
@@ -304,104 +297,20 @@ def _get_first_training_question_id(task_json: dict) -> int | None:
     return None
 
 
-def _parse_drag_pairs_from_excel(answer_text: str) -> list[tuple[str, str]]:
-    if not answer_text:
-        return []
-    pairs = []
-    for raw in str(answer_text).splitlines():
-        if "->" not in raw:
-            continue
-        left, right = raw.split("->", 1)
-        left = left.strip()
-        right = right.strip()
-        if left.startswith("[") and left.endswith("]"):
-            left = left[1:-1].strip()
-        if right.startswith("[") and right.endswith("]"):
-            right = right[1:-1].strip()
-        if left and right:
-            pairs.append((left, right))
-    return pairs
-
-
-def _normalize_drag_match_text(text: str) -> str:
-    return re.sub(r"\s+", " ", (text or "").strip())
-
-
-def _best_id_by_text(text: str, options: list[tuple[str, int]], threshold: float = 0.7) -> int | None:
-    best_ratio = 0.0
-    best_id = None
-    needle = _normalize_drag_match_text(text)
-    for opt_text, opt_id in options:
-        r = similarity(needle, _normalize_drag_match_text(opt_text))
-        if r >= threshold and r > best_ratio:
-            best_ratio = r
-            best_id = opt_id
-    return best_id
-
-
-def _task_has_links_question(task_json: dict | None) -> bool:
-    """Training task API: question type links = drag-and-drop сопоставление."""
-    if not isinstance(task_json, dict):
+def _training_start_succeeded(start_resp) -> bool:
+    """True if training is started or was already in progress (finish may still work)."""
+    if start_resp is None:
         return False
-    for q in (task_json.get("questions") or []):
-        if isinstance(q, dict) and q.get("type") == "links":
+    if start_resp.status_code in (200, 201, 204):
+        return True
+    if start_resp.status_code in (400, 409, 422):
+        body = (start_resp.text or "").lower()
+        if any(
+            s in body
+            for s in ("already", "started", "in_progress", "progress", "начат", "уже")
+        ):
             return True
     return False
-
-
-def _build_training_drag_payload_from_api(task_json: dict, answer_text: str) -> tuple[int | None, list[tuple[int, int]]]:
-    if not isinstance(task_json, dict):
-        return None, []
-    questions = task_json.get("questions") or []
-    q_links = None
-    for q in questions:
-        if isinstance(q, dict) and q.get("type") == "links":
-            q_links = q
-            break
-    if not q_links:
-        return None, []
-    qid = q_links.get("id")
-    if qid is None:
-        return None, []
-    left_opts = []
-    for a in (q_links.get("answers") or []):
-        if isinstance(a, dict) and a.get("id") is not None:
-            left_opts.append((str(a.get("content") or "").strip(), int(a["id"])))
-    right_opts = []
-    for a in (q_links.get("available_answers") or []):
-        if isinstance(a, dict) and a.get("id") is not None:
-            right_opts.append((str(a.get("content") or "").strip(), int(a["id"])))
-    pairs = _parse_drag_pairs_from_excel(answer_text)
-    mappings: list[tuple[int, int]] = []
-    used_left = set()
-    for left_txt, right_txt in pairs:
-        left_id = _best_id_by_text(left_txt, left_opts, threshold=ANSWER_SIMILARITY_THRESHOLD)
-        right_id = _best_id_by_text(right_txt, right_opts, threshold=ANSWER_SIMILARITY_THRESHOLD)
-        if left_id is None or right_id is None or left_id in used_left:
-            continue
-        used_left.add(left_id)
-        mappings.append((left_id, right_id))
-    return int(qid), mappings
-
-
-def _get_page_html(driver: WebDriver, page_url: str) -> tuple[str | None, bool]:
-    """Fast page load without extra waits/checks."""
-    try:
-        driver.set_page_load_timeout(20)
-        driver.get(page_url)
-        time.sleep(0.75)
-        page_html = driver.page_source
-        if not page_html:
-            return (None, False)
-        return (page_html, False)
-    except Exception:
-        return (None, False)
-    finally:
-        try:
-            driver.switch_to.default_content()
-            driver.set_page_load_timeout(300)
-        except Exception:
-            pass
 
 
 def run_3_3(driver: WebDriver, gender: str | None = None) -> None:
@@ -420,19 +329,14 @@ def run_3_3(driver: WebDriver, gender: str | None = None) -> None:
         print(f"[3.3] Training {training_id}: submitting {len(rows)} answers")
         try:
             session = make_session(driver)
+            refresh_session_from_driver(driver, session)
         except Exception:
             traceback.print_exc()
             continue
 
         # Start training before submitting attempts (per requirements curl)
+        start_resp = None
         try:
-            training_page_url = f"{BASE_URL}/trainings/{training_id}"
-            page_html, already_answered = _get_page_html(driver, training_page_url)
-            if page_html:
-                refresh_session_from_driver(driver, session)
-                page_csrf = get_csrf_from_page(page_html)
-                if page_csrf:
-                    session.headers["X-CSRF-Token"] = page_csrf
             start_resp = start_training(session, training_id)
             if start_resp.status_code in (200, 201, 204):
                 preview = (start_resp.text or "")[:200].replace("\n", " ")
@@ -444,35 +348,22 @@ def run_3_3(driver: WebDriver, gender: str | None = None) -> None:
             print(f"[3.3] Start training {training_id} failed:")
             traceback.print_exc()
 
+        training_started = _training_start_succeeded(start_resp)
+        submit_failures = 0
+
         for task_id, answer in rows:
             answer = _apply_gender_marker(answer, gender)
             print(f"[3.3] Task {task_id} ...", flush=True)
-            page_url = f"{BASE_URL}/trainings/{training_id}/tasks/{task_id}"
-            page_html, already_answered = _get_page_html(driver, page_url)
-            if not page_html:
-                print(f"[3.3] Could not load page for task {task_id}")
+            submit_training_id = training_id
+            submit_task_id = task_id
+            task_json = fetch_training_task(session, submit_training_id, submit_task_id)
+            if not task_json:
+                print(f"[3.3] Could not load task API for task {task_id}")
                 continue
 
-            refresh_session_from_driver(driver, session)
-            page_csrf = get_csrf_from_page(page_html)
-            if page_csrf:
-                session.headers["X-CSRF-Token"] = page_csrf
-
-            actual_training_id, actual_task_id = _extract_training_and_task_from_form_action(page_html)
-            submit_training_id = actual_training_id if actual_training_id is not None else training_id
-            submit_task_id = actual_task_id if actual_task_id is not None else task_id
-            if str(submit_training_id) != str(training_id) or str(submit_task_id) != str(task_id):
-                print(
-                    f"[3.3] Task {task_id}: canonical ids from page "
-                    f"training={submit_training_id}, task={submit_task_id}"
-                )
-
-            parsed = parse_question_page(page_html)
+            parsed = parse_task_from_api(task_json, api_format="training")
             form_key = parsed.get("question_form_key")
-            task_json = _get_training_task_json(session, submit_training_id, submit_task_id)
-            is_drag_task = parsed.get("is_drag") or _task_has_links_question(task_json)
-            if is_drag_task and not parsed.get("is_drag"):
-                print(f"[3.3] Task {task_id}: drag (links) detected from API JSON")
+            is_drag_task = parsed.get("is_drag") or task_has_links_question(task_json)
             expected_qids = _extract_question_ids(task_json)
             pre_user_answer_id = task_json.get("user_answer_id") if isinstance(task_json, dict) else None
 
@@ -510,8 +401,10 @@ def run_3_3(driver: WebDriver, gender: str | None = None) -> None:
             if is_drag_task:
                 drag_qid, drag_mappings = _parse_drag_payload(str(answer))
                 if (drag_qid is None or not drag_mappings) and task_json:
-                    drag_qid, drag_mappings = _build_training_drag_payload_from_api(
-                        task_json, str(answer or "")
+                    drag_qid, drag_mappings = build_drag_payload_from_api(
+                        task_json,
+                        str(answer or ""),
+                        threshold=ANSWER_SIMILARITY_THRESHOLD,
                     )
                 if drag_qid is not None and drag_mappings:
                     try:
@@ -545,7 +438,11 @@ def run_3_3(driver: WebDriver, gender: str | None = None) -> None:
                         )
                     time.sleep(0.2)
                     continue
-                print(f"[3.3] Drag task {task_id}: payload not found in Excel answer, skip.")
+                n_pairs = len(parse_drag_pairs_from_excel(str(answer or "")))
+                print(
+                    f"[3.3] Drag task {task_id}: {n_pairs} pair(s) in Excel, "
+                    f"0 matched API options — check spelling/extra spaces"
+                )
                 continue
 
             if not raw_fields:
@@ -572,13 +469,6 @@ def run_3_3(driver: WebDriver, gender: str | None = None) -> None:
                     print(f"[3.3] Submit training={submit_training_id} task={submit_task_id} -> err {resp.status_code}: {body}")
                 time.sleep(0.2)
                 continue
-
-            if not form_key and parsed.get("is_code"):
-                ids = _get_training_code_ids_from_api(session, submit_training_id, submit_task_id)
-                if ids:
-                    parsed["code_question_id"] = ids.get("code_question_id")
-                    parsed["test_case_execution_id"] = ids.get("test_case_execution_id")
-                    parsed["is_code"] = True
 
             if parsed.get("is_code"):
                 code_id = parsed.get("code_question_id")
@@ -621,7 +511,11 @@ def run_3_3(driver: WebDriver, gender: str | None = None) -> None:
                         try:
                             files = [(form_key, (None, v)) for v in text_values]
                             url = f"{BASE_URL}/api/trainings/{submit_training_id}/tasks/{submit_task_id}/answer_attempts"
-                            resp = _submit_with_verify(lambda: session.post(url, files=files))
+                            resp = _submit_with_verify(
+                                lambda: request_with_retry(
+                                    session, "POST", url, files=files, label="3.3 multi-text"
+                                )
+                            )
                         except Exception:
                             print(f"[3.3] Submit task {task_id} failed:")
                             traceback.print_exc()
@@ -649,11 +543,16 @@ def run_3_3(driver: WebDriver, gender: str | None = None) -> None:
                     if not answer_values:
                         print(f"[3.3] No matching option(s) for answer '{answer}' (task {task_id}), skip.")
                         continue
-                    # trainings multiple choice uses repeated key like lessons
                     try:
-                        files = [(form_key, (None, str(v))) for v in answer_values]
-                        url = f"{BASE_URL}/api/trainings/{submit_training_id}/tasks/{submit_task_id}/answer_attempts"
-                        resp = _submit_with_verify(lambda: session.post(url, files=files))
+                        resp = _submit_with_verify(
+                            lambda: submit_answer_training_multiple(
+                                session,
+                                submit_training_id,
+                                submit_task_id,
+                                form_key,
+                                answer_values,
+                            )
+                        )
                     except Exception:
                         print(f"[3.3] Submit task {task_id} failed:")
                         traceback.print_exc()
@@ -664,6 +563,16 @@ def run_3_3(driver: WebDriver, gender: str | None = None) -> None:
                     if answer_value is None:
                         print(f"[3.3] No matching option for answer '{answer}' (task {task_id}), skip.")
                         continue
+                    qtypes = [
+                        (q.get("type") or "?")
+                        for q in (task_json.get("questions") or [])
+                        if isinstance(q, dict)
+                    ]
+                    kind = "select" if parsed.get("is_select") else "radio/choice"
+                    print(
+                        f"[3.3] Task {task_id}: {kind} submit {form_key}={answer_value} "
+                        f"(api types: {', '.join(qtypes)})"
+                    )
                     try:
                         resp = _submit_with_verify(
                             lambda: submit_answer_training(
@@ -675,15 +584,26 @@ def run_3_3(driver: WebDriver, gender: str | None = None) -> None:
                         traceback.print_exc()
                         continue
 
-            if resp.status_code in (200, 201, 204):
+            if resp is not None and resp.status_code in (200, 201, 204):
                 preview = (resp.text or "")[:200].replace("\n", " ")
                 print(f"[3.3] Submit training={submit_training_id} task={submit_task_id} -> {resp.status_code} {preview}")
-            else:
+            elif resp is not None:
+                submit_failures += 1
                 body = (resp.text or (resp.content.decode(errors="replace") if resp.content else ""))[:500]
                 print(f"[3.3] Submit training={submit_training_id} task={submit_task_id} -> err {resp.status_code}: {body}")
 
             time.sleep(0.2)
 
+        if not training_started:
+            print(
+                f"[3.3] Warning: start training={training_id} unclear; "
+                f"attempting finish anyway."
+            )
+        if submit_failures:
+            print(
+                f"[3.3] Finish training={training_id} after {submit_failures} failed submit(s) "
+                f"(server may return 500 if attempts are incomplete)."
+            )
         try:
             finish_resp = finish_training(session, training_id)
             if finish_resp.status_code in (200, 201, 204):

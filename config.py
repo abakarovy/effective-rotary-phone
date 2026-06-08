@@ -28,6 +28,11 @@ HEADLESS = os.environ.get("KBC_HEADLESS", "").lower() in ("1", "true", "yes")
 IMPLICIT_WAIT_SEC = 10
 # Pause after opening browser so user can log in
 LOGIN_WAIT_SEC = int(os.environ.get("KBC_LOGIN_WAIT_SEC", "60"))
+# Max wait for task page API (Network tab: /api/.../tasks/{task_id}) before using HTML
+TASK_PAGE_WAIT_SEC = int(os.environ.get("KBC_TASK_PAGE_WAIT_SEC", "30"))
+# Retry count when API returns HTTP 500
+API_RETRY_COUNT = int(os.environ.get("KBC_API_RETRY_COUNT", "3"))
+API_RETRY_DELAY_SEC = float(os.environ.get("KBC_API_RETRY_DELAY_SEC", "0.75"))
 
 # Answer matching: min ratio (0..1) to accept Excel answer as match for radio option text
 ANSWER_SIMILARITY_THRESHOLD = float(os.environ.get("KBC_ANSWER_SIMILARITY", "0.7"))
